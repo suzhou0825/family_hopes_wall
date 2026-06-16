@@ -23,7 +23,7 @@
 
 不要把 Supabase `service_role` key 写进前端或发给别人。
 当前本地已配置 Supabase 项目 `jqlgnsatgvwjadbzghfr`。
-当前 Supabase 项目已执行 `supabase/schema.sql`，`app_state` 表和 RLS 策略已创建。
+当前 Supabase 需要执行最新的 `supabase/schema.sql`，创建 `profiles`、`app_state` 表和 RLS 策略。
 
 ## GitHub 登录配置
 
@@ -57,7 +57,20 @@
 
 ## 账号切换
 
-页面上方是 Supabase 登录，支持邮箱密码和 GitHub 登录。页面右上角仍保留家庭成员视角切换，用于在当前家庭数据中切换父母/孩子视角。
+打开网页后必须先登录账号密码，也可以使用 GitHub 登录。登录后页面右上角仍保留家庭成员视角切换，用于在当前家庭数据中切换父母/孩子视角。
+
+## 账号管理
+
+登录后页面上方显示账号管理。
+
+支持：
+
+- 查看当前登录邮箱
+- 编辑账号昵称
+- 修改密码
+- 退出登录
+
+账号昵称保存到 Supabase `profiles` 表。邮箱和密码由 Supabase Auth 管理。
 
 - 父母账号：可以访问任务发布和家庭管理。
 - 孩子账号：可以访问许愿板块、我的任务，并在许愿墙申领任务。

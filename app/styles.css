@@ -49,6 +49,39 @@ button:disabled {
   padding: 28px 0 48px;
 }
 
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.login-card {
+  width: min(560px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 34px;
+  box-shadow: var(--shadow);
+}
+
+.login-card p {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .topbar {
   position: relative;
   overflow: hidden;
@@ -176,6 +209,13 @@ input[type="checkbox"] {
 .auth-form {
   display: grid;
   grid-template-columns: 180px 160px auto auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.account-form {
+  display: grid;
+  grid-template-columns: 180px 180px auto auto;
   gap: 10px;
   align-items: center;
 }
@@ -499,6 +539,7 @@ input[type="checkbox"] {
   .topbar,
   .auth-panel,
   .auth-form,
+  .account-form,
   .wall-grid,
   .two-column,
   .task-row {

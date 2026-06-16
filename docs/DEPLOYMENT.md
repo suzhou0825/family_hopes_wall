@@ -7,7 +7,7 @@
 ## 部署前检查
 
 - Supabase 项目已创建。
-- `supabase/schema.sql` 已执行。
+- 最新 `supabase/schema.sql` 已执行，包含 `profiles` 和 `app_state`。
 - 本地 `.env.local` 已配置：
   - `NEXT_PUBLIC_SUPABASE_URL`
   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`

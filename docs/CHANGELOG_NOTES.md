@@ -30,3 +30,4 @@
 - 用户要求 Supabase 允许 GitHub 登录；已在前端新增 GitHub 登录按钮，并补充 Supabase/GitHub OAuth 后台配置说明。
 - 用户反馈 GitHub 登录报错 `Unsupported provider: provider is not enabled`；已补充到使用说明的排查说明中。
 - 用户确认 Supabase 已可用，并要求配置外网访问；已新增 Vercel 部署说明，并补充 Supabase 外网 URL 配置要求。
+- 用户要求开发账户管理并记录到 Supabase 数据库，打开网页后必须账号密码登录；已新增登录门禁、账号管理表单和 `profiles` 表。

@@ -25,6 +25,14 @@ type StoredAppData = {
   tasks: Task[];
 };
 
+type Profile = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type Member = {
   id: string;
   name: string;
@@ -180,7 +188,10 @@ export default function Home() {
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authMessage, setAuthMessage] = useState("");
   const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [isSessionLoading, setIsSessionLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState("本地演示数据");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [accountMessage, setAccountMessage] = useState("");
   const [currentUserId, setCurrentUserId] = useState("p1");
   const [activeView, setActiveView] = useState("wall");
   const [editingWishId, setEditingWishId] = useState<string | null>(null);
@@ -241,10 +252,12 @@ export default function Home() {
       const sessionUser = data.session?.user ?? null;
       setUser(sessionUser);
       if (sessionUser) {
+        loadProfile(sessionUser);
         loadCloudData(sessionUser.id);
       } else {
         setHasLoadedStoredData(true);
       }
+      setIsSessionLoading(false);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -252,11 +265,14 @@ export default function Home() {
       setUser(nextUser);
       setAuthMessage("");
       if (nextUser) {
+        loadProfile(nextUser);
         loadCloudData(nextUser.id);
       } else {
+        setProfile(null);
         setHasLoadedStoredData(true);
         setSaveStatus("未登录，已保存到本地演示数据");
       }
+      setIsSessionLoading(false);
     });
 
     return () => {
@@ -281,6 +297,39 @@ export default function Home() {
     }
     setHasLoadedStoredData(true);
     setSaveStatus("已连接 Supabase");
+  }
+
+  async function loadProfile(nextUser: User) {
+    if (!supabase) return;
+    const email = nextUser.email ?? "";
+    const fallbackName = nextUser.user_metadata?.name ?? nextUser.user_metadata?.user_name ?? email.split("@")[0] ?? "家庭成员";
+    const nextProfile: Profile = {
+      user_id: nextUser.id,
+      email,
+      display_name: fallbackName,
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase.from("profiles").select("*").eq("user_id", nextUser.id).maybeSingle();
+    if (error) {
+      setAccountMessage(`读取账号资料失败：${error.message}`);
+      return;
+    }
+    if (data) {
+      setProfile(data as Profile);
+      return;
+    }
+
+    const { data: created, error: createError } = await supabase
+      .from("profiles")
+      .insert(nextProfile)
+      .select("*")
+      .single();
+    if (createError) {
+      setAccountMessage(`创建账号资料失败：${createError.message}`);
+      return;
+    }
+    setProfile(created as Profile);
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -309,6 +358,43 @@ export default function Home() {
     setAuthMessage(authMode === "signup" ? "注册成功。如 Supabase 开启邮箱验证，请先查收验证邮件。" : "登录成功。");
   }
 
+  async function saveAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !user) return;
+    const data = new FormData(event.currentTarget);
+    const displayName = String(data.get("displayName") ?? "").trim();
+    const newPassword = String(data.get("newPassword") ?? "");
+    if (!displayName) return;
+
+    setAccountMessage("");
+    const { data: savedProfile, error: profileError } = await supabase
+      .from("profiles")
+      .upsert({
+        user_id: user.id,
+        email: user.email ?? "",
+        display_name: displayName,
+        updated_at: new Date().toISOString()
+      })
+      .select("*")
+      .single();
+
+    if (profileError) {
+      setAccountMessage(`保存账号资料失败：${profileError.message}`);
+      return;
+    }
+    setProfile(savedProfile as Profile);
+
+    if (newPassword) {
+      const { error: passwordError } = await supabase.auth.updateUser({ password: newPassword });
+      if (passwordError) {
+        setAccountMessage(`资料已保存，但密码修改失败：${passwordError.message}`);
+        return;
+      }
+      event.currentTarget.reset();
+    }
+    setAccountMessage("账号资料已保存。");
+  }
+
   async function signInWithGithub() {
     if (!supabase) {
       setAuthMessage("请先配置 Supabase 环境变量。");
@@ -330,6 +416,7 @@ export default function Home() {
     if (!supabase) return;
     await supabase.auth.signOut();
     setUser(null);
+    setProfile(null);
     setAuthMessage("已退出登录。");
   }
 
@@ -554,6 +641,62 @@ export default function Home() {
   const claimableTasks = tasks.filter((task) => task.status === "待申领");
   const myTasks = tasks.filter((task) => task.assigneeId === currentUser.id);
 
+  if (isSessionLoading) {
+    return (
+      <main className="app-shell auth-shell">
+        <section className="login-card">
+          <p className="eyebrow">家庭许愿墙</p>
+          <h1>正在检查登录状态</h1>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="app-shell auth-shell">
+        <section className="login-card">
+          <p className="eyebrow">家庭许愿墙</p>
+          <h1>登录后管理家庭愿望和任务</h1>
+          <p>请输入账号密码登录。没有账号可以先注册。</p>
+          {!isSupabaseConfigured && <p className="auth-message">请先配置 Supabase 环境变量。</p>}
+          <form className="login-form" onSubmit={submitAuth}>
+            <label>
+              邮箱
+              <input name="email" type="email" placeholder="you@example.com" disabled={!isSupabaseConfigured || isAuthLoading} required />
+            </label>
+            <label>
+              密码
+              <input name="password" type="password" placeholder="请输入密码" disabled={!isSupabaseConfigured || isAuthLoading} required />
+            </label>
+            <div className="form-actions">
+              <button className="primary-button" type="submit" disabled={!isSupabaseConfigured || isAuthLoading}>
+                {authMode === "login" ? "登录" : "注册"}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={!isSupabaseConfigured || isAuthLoading}
+                onClick={() => setAuthMode((current) => (current === "login" ? "signup" : "login"))}
+              >
+                切换到{authMode === "login" ? "注册" : "登录"}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={!isSupabaseConfigured || isAuthLoading}
+                onClick={signInWithGithub}
+              >
+                GitHub 登录
+              </button>
+            </div>
+          </form>
+          {authMessage && <p className="auth-message">{authMessage}</p>}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -587,46 +730,22 @@ export default function Home() {
 
       <section className="auth-panel">
         <div>
-          <strong>{isSupabaseConfigured ? "Supabase 登录" : "Supabase 未配置"}</strong>
+          <strong>账号管理</strong>
           <p>
-            {user
-              ? `当前登录：${user.email ?? user.id}`
-              : isSupabaseConfigured
-                ? "登录后数据会保存到 Supabase。"
-                : "复制 .env.example 为 .env.local，并填写 Supabase URL 和 anon key。"}
+            当前登录：{user.email ?? user.id}
           </p>
+          <p>账号昵称：{profile?.display_name ?? "未设置"}</p>
           <small>{saveStatus}</small>
         </div>
-        {user ? (
-          <button className="secondary-button" onClick={signOut}>
+        <form className="account-form" key={profile?.updated_at ?? profile?.display_name ?? user.id} onSubmit={saveAccount}>
+          <input name="displayName" defaultValue={profile?.display_name ?? ""} placeholder="账号昵称" required />
+          <input name="newPassword" type="password" placeholder="新密码，可不填" />
+          <button className="primary-button" type="submit">保存账号</button>
+          <button className="secondary-button" type="button" onClick={signOut}>
             退出登录
           </button>
-        ) : (
-          <form className="auth-form" onSubmit={submitAuth}>
-            <input name="email" type="email" placeholder="邮箱" disabled={!isSupabaseConfigured || isAuthLoading} required />
-            <input name="password" type="password" placeholder="密码" disabled={!isSupabaseConfigured || isAuthLoading} required />
-            <button className="primary-button" type="submit" disabled={!isSupabaseConfigured || isAuthLoading}>
-              {authMode === "login" ? "登录" : "注册"}
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={!isSupabaseConfigured || isAuthLoading}
-              onClick={signInWithGithub}
-            >
-              GitHub 登录
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={!isSupabaseConfigured || isAuthLoading}
-              onClick={() => setAuthMode((current) => (current === "login" ? "signup" : "login"))}
-            >
-              切换到{authMode === "login" ? "注册" : "登录"}
-            </button>
-          </form>
-        )}
-        {authMessage && <p className="auth-message">{authMessage}</p>}
+        </form>
+        {accountMessage && <p className="auth-message">{accountMessage}</p>}
       </section>
 
       <nav className="tabs" aria-label="主导航">

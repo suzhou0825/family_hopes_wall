@@ -28,7 +28,8 @@
 - 技术栈：Next.js + TypeScript。
 - 云端方向：Supabase。
 - 已接入 Supabase Auth 和 `app_state` 数据表。
-- 当前 Supabase 项目已执行 `supabase/schema.sql`。
+- 已接入 `profiles` 账号资料表，用于保存账号昵称、邮箱、创建时间和更新时间。
+- Supabase 项目需要执行最新的 `supabase/schema.sql`。
 - 当前 Supabase 第一版使用 `app_state.data` JSON 保存完整应用数据。
 - 后续需要拆成家庭成员、愿望、任务、打卡记录等独立数据表。
 - 未配置或未登录 Supabase 时，使用浏览器 `localStorage` 作为演示数据。
@@ -43,6 +44,9 @@
 
 ## 角色与权限
 
+- 打开网页后必须先登录账号密码，未登录不得进入应用主界面。
+- 登录账号由 Supabase Auth 管理。
+- 账号资料必须记录到 Supabase `profiles` 表。
 - 父母账号可以访问任务发布和家庭管理。
 - 孩子账号可以访问许愿板块、我的任务，并在许愿墙申领任务。
 - 父母账号不显示孩子许愿入口。
