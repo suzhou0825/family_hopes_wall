@@ -24,6 +24,7 @@
 不要把 Supabase `service_role` key 写进前端或发给别人。
 当前本地已配置 Supabase 项目 `jqlgnsatgvwjadbzghfr`。
 当前 Supabase 需要执行最新的 `supabase/schema.sql`，创建 `profiles`、`app_state` 表和 RLS 策略。
+如果页面一直停在“正在检查登录状态”，优先检查 Vercel 或本地环境变量是否配置了 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY`。
 
 ## GitHub 登录配置
 

@@ -27,6 +27,8 @@
 6. 部署完成后，记录 Vercel 生成的域名，例如：
    - `https://your-project.vercel.app`
 
+如果线上页面停在“正在检查登录状态”，通常是 Vercel 没有配置 Supabase 环境变量，或配置后没有重新部署。
+
 ## Supabase 外网配置
 
 部署完成后，需要回到 Supabase Dashboard 配置 URL。

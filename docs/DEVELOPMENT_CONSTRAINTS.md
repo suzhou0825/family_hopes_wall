@@ -37,6 +37,7 @@
 - 不允许把 Supabase `service_role` key 放进前端代码，只能使用 anon key。
 - `.env.local` 可以保存当前项目的 Supabase URL 和 anon/publishable key，但不得提交到版本库。
 - 支持 GitHub OAuth 登录，但 GitHub Client Secret 只能配置在 Supabase 后台，不能写进前端代码或 `.env.local`。
+- 登录状态检查必须有超时或未配置兜底，不能让用户无限停留在加载页。
 - 新增交互后需要跑：
   - `npm run typecheck`
   - `npm run build`

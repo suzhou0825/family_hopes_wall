@@ -246,9 +246,19 @@ export default function Home() {
   }, [hasLoadedStoredData, members, wishes, tasks, user]);
 
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) {
+      setIsSessionLoading(false);
+      setHasLoadedStoredData(true);
+      return;
+    }
+
+    const sessionTimeout = window.setTimeout(() => {
+      setIsSessionLoading(false);
+      setAuthMessage("登录状态检查超时，请确认 Supabase 环境变量和网络配置。");
+    }, 8000);
 
     supabase.auth.getSession().then(({ data }) => {
+      window.clearTimeout(sessionTimeout);
       const sessionUser = data.session?.user ?? null;
       setUser(sessionUser);
       if (sessionUser) {
@@ -261,6 +271,7 @@ export default function Home() {
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      window.clearTimeout(sessionTimeout);
       const nextUser = session?.user ?? null;
       setUser(nextUser);
       setAuthMessage("");
@@ -276,6 +287,7 @@ export default function Home() {
     });
 
     return () => {
+      window.clearTimeout(sessionTimeout);
       listener.subscription.unsubscribe();
     };
   }, []);
