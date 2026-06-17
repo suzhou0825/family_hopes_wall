@@ -7,7 +7,8 @@
 ## 部署前检查
 
 - Supabase 项目已创建。
-- 最新 `supabase/schema.sql` 已执行，包含 `profiles` 和 `app_state`。
+- 最新 `supabase/schema.sql` 已执行，包含 `app_families`、`app_accounts`、`app_sessions`、`app_family_data` 和登录 RPC。
+- Supabase 中不再保留旧版本 `profiles`、`app_state`、`app_data` 表。
 - 本地 `.env.local` 已配置：
   - `NEXT_PUBLIC_SUPABASE_URL`
   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -31,33 +32,20 @@
 
 ## Supabase 外网配置
 
-部署完成后，需要回到 Supabase Dashboard 配置 URL。
+当前登录不使用 Supabase Auth 和 OAuth。外网访问主要确认两点：
 
-在 Authentication -> URL Configuration 中设置：
-
-- Site URL：
-  - `https://your-project.vercel.app`
-
-- Redirect URLs 添加：
-  - `http://localhost:3333`
-  - `https://your-project.vercel.app`
-
-如果使用 GitHub 登录，还需要检查 GitHub OAuth App：
-
-- Authorization callback URL 保持为：
-  - `https://jqlgnsatgvwjadbzghfr.supabase.co/auth/v1/callback`
-
-Supabase GitHub Provider 中继续保存 GitHub Client ID 和 Client Secret。
+- Vercel 环境变量指向同一个 Supabase 项目。
+- Supabase SQL Editor 已执行最新 `supabase/schema.sql`。
 
 ## 本地和外网的区别
 
 - 本地地址：`http://localhost:3333`
 - 外网地址：Vercel 部署后的 `https://...vercel.app`
-- 登录和数据保存都走同一个 Supabase 项目。
+- 应用账号校验和数据保存都走同一个 Supabase 项目。
+- 本地 `.env.local` 和 Vercel Environment Variables 必须配置同一组 Supabase URL 和 anon/publishable key。
 
 ## 安全要求
 
 - 不要提交 `.env.local`。
 - 不要把 Supabase `service_role` key 放进前端。
-- 不要把 GitHub Client Secret 写进项目文件。
 - Vercel 只配置 Supabase anon/publishable key。

@@ -27,16 +27,20 @@
 
 - 技术栈：Next.js + TypeScript。
 - 云端方向：Supabase。
-- 已接入 Supabase Auth 和 `app_state` 数据表。
-- 已接入 `profiles` 账号资料表，用于保存账号昵称、邮箱、创建时间和更新时间。
+- 已接入应用自有账号体系，不使用 Supabase Auth 作为家庭成员登录。
+- 家庭、账号、密码哈希、会话和家庭数据分别保存到 `app_families`、`app_accounts`、`app_sessions`、`app_family_data`。
+- Supabase 当前只保留系统需要的数据表：`app_families`、`app_accounts`、`app_sessions`、`app_family_data`。
+- 旧版本遗留的 `profiles`、`app_state`、`app_data` 必须从 Supabase 中删除，不再保留冗余表。
+- 前端只能使用 Supabase anon key 调用 RPC，不得直接读取密码哈希或会话表。
 - Supabase 项目需要执行最新的 `supabase/schema.sql`。
-- 当前 Supabase 第一版使用 `app_state.data` JSON 保存完整应用数据。
+- 本地 `http://localhost:3333` 调试环境、GitHub 代码和 Vercel 线上环境必须使用同一个 Supabase 项目和数据库。
+- 本地 `.env.local` 与 Vercel Environment Variables 中的 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY` 必须指向同一个 Supabase 项目。
+- 当前 Supabase 第一版使用 `app_family_data.data` JSON 保存完整家庭应用数据。
 - 后续需要拆成家庭成员、愿望、任务、打卡记录等独立数据表。
-- 未配置或未登录 Supabase 时，使用浏览器 `localStorage` 作为演示数据。
+- 未配置 Supabase 时，使用浏览器 `localStorage` 作为开发兜底。
 - 修改数据模型时必须兼容旧的 localStorage 数据，避免用户本地数据直接崩溃。
 - 不允许把 Supabase `service_role` key 放进前端代码，只能使用 anon key。
 - `.env.local` 可以保存当前项目的 Supabase URL 和 anon/publishable key，但不得提交到版本库。
-- 支持 GitHub OAuth 登录，但 GitHub Client Secret 只能配置在 Supabase 后台，不能写进前端代码或 `.env.local`。
 - 登录状态检查必须有超时或未配置兜底，不能让用户无限停留在加载页。
 - 新增交互后需要跑：
   - `npm run typecheck`
@@ -46,18 +50,33 @@
 ## 角色与权限
 
 - 打开网页后必须先登录账号密码，未登录不得进入应用主界面。
-- 登录账号由 Supabase Auth 管理。
-- 账号资料必须记录到 Supabase `profiles` 表。
+- 登录账号由本应用管理，登录时通过 Supabase RPC 校验数据库中的账号密码哈希。
+- 账号资料必须记录到 Supabase `app_accounts` 表。
+- 注册只支持普通账号，不使用邮箱作为登录账号。
+- 主动注册只能创建父母账号。
+- 主动注册会创建新的家庭数据空间。
+- 父母注册时必须选择爸爸或妈妈。
+- 第二个父母账号必须由已登录父母在家庭管理中创建，才能加入同一个家庭。
+- 父母可以在家庭管理中创建父母账号和孩子账号。
+- 父母创建孩子账号时必须设置孩子账号、初始密码、性别和家庭称呼。
+- 账号只能包含小写字母、数字、下划线，长度 3 到 32 位。
+- 注册密码必须输入两次并校验一致。
+- 密码至少 8 位，并且必须包含字母和数字。
+- 密码中字母区分大小写。
+- 登录、注册、修改密码和父母创建孩子账号的初始密码场景必须提供密码显示/隐藏按钮。
 - 父母账号可以访问任务发布和家庭管理。
 - 孩子账号可以访问许愿板块、我的任务，并在许愿墙申领任务。
 - 父母账号不显示孩子许愿入口。
 - 孩子账号不显示任务发布入口。
-- 家庭成员由管理员手动添加，不使用邀请码。
+- 登录后右上角必须展示具体家庭角色，不只展示父母或孩子；可选项包括爸爸、妈妈、哥哥、弟弟、姐姐、妹妹。
+- 家庭成员由父母手动添加，不使用邀请码。
 
 ## 家庭成员
 
-- 添加或编辑父母时，设置爸爸或妈妈身份。
-- 添加或编辑孩子时，不显示父母身份。
+- 父母身份在主动注册时设置为爸爸或妈妈。
+- 家庭管理负责添加父母账号、孩子账号和编辑家庭成员资料。
+- 删除家庭成员必须同步删除对应 `app_accounts` 账号和 `app_sessions` 会话。
+- 不能删除当前正在登录的账号。
 - 添加或编辑孩子时，必须支持选择性别：男孩、女孩。
 - 添加或编辑孩子时，必须支持选择家庭称呼：哥哥、弟弟、姐姐、妹妹。
 

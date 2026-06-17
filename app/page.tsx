@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 
 type Role = "parent" | "child";
@@ -25,10 +24,16 @@ type StoredAppData = {
   tasks: Task[];
 };
 
-type Profile = {
-  user_id: string;
-  email: string;
+type AppAccount = {
+  id: string;
+  username: string;
   display_name: string;
+  family_id?: string;
+  member_id?: string;
+  role?: Role;
+  parent_title?: ParentTitle;
+  child_title?: ChildTitle;
+  gender?: ChildGender;
   created_at?: string;
   updated_at?: string;
 };
@@ -40,6 +45,7 @@ type Member = {
   title?: ParentTitle;
   gender?: ChildGender;
   childTitle?: ChildTitle;
+  accountUsername?: string;
 };
 
 type Wish = {
@@ -73,6 +79,24 @@ type Task = {
 
 const weekdays: Weekday[] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const storageKey = "family-wish-wall-data-v1";
+const sessionStorageKey = "family-wish-wall-app-session-v1";
+
+function validatePassword(password: string) {
+  return password.length >= 8 && /[A-Za-z]/.test(password) && /\d/.test(password);
+}
+
+function normalizeUsername(username: string) {
+  return username.trim().toLowerCase();
+}
+
+function validateUsername(username: string) {
+  return /^[a-z0-9_]{3,32}$/.test(username);
+}
+
+function getFamilyRoleLabel(member: Member) {
+  if (member.role === "parent") return member.title ?? "父母";
+  return member.childTitle ?? "孩子";
+}
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10);
@@ -184,14 +208,19 @@ export default function Home() {
   const [wishes, setWishes] = useState<Wish[]>(initialWishes);
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [hasLoadedStoredData, setHasLoadedStoredData] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
+  const [account, setAccount] = useState<AppAccount | null>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authMessage, setAuthMessage] = useState("");
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [isSessionLoading, setIsSessionLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState("本地演示数据");
-  const [profile, setProfile] = useState<Profile | null>(null);
   const [accountMessage, setAccountMessage] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showMemberPassword, setShowMemberPassword] = useState(false);
+  const [showMemberConfirmPassword, setShowMemberConfirmPassword] = useState(false);
   const [currentUserId, setCurrentUserId] = useState("p1");
   const [activeView, setActiveView] = useState("wall");
   const [editingWishId, setEditingWishId] = useState<string | null>(null);
@@ -200,10 +229,10 @@ export default function Home() {
   const [taskFormType, setTaskFormType] = useState<TaskType>("打卡任务");
   const [memberFormRole, setMemberFormRole] = useState<Role>("child");
 
-  const currentUser = members.find((member) => member.id === currentUserId) ?? members[0];
+  const currentUser = members.find((member) => member.id === currentUserId) ?? members[0] ?? initialMembers[0];
   const parents = members.filter((member) => member.role === "parent");
   const children = members.filter((member) => member.role === "child");
-  const roleLabel = currentUser.role === "parent" ? "父母账号" : "孩子账号";
+  const roleLabel = getFamilyRoleLabel(currentUser);
 
   const wishById = useMemo(() => new Map(wishes.map((wish) => [wish.id, wish])), [wishes]);
   const memberById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members]);
@@ -212,41 +241,27 @@ export default function Home() {
   const editingMember = members.find((member) => member.id === editingMemberId);
 
   useEffect(() => {
-    if (isSupabaseConfigured) return;
-    try {
-      const rawData = window.localStorage.getItem(storageKey);
-      if (rawData) {
-        const storedData = JSON.parse(rawData) as StoredAppData;
-        if (Array.isArray(storedData.members) && Array.isArray(storedData.wishes) && Array.isArray(storedData.tasks)) {
-          setMembers(storedData.members);
-          setWishes(storedData.wishes);
-          setTasks(storedData.tasks);
-        }
-      }
-    } finally {
-      setHasLoadedStoredData(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!hasLoadedStoredData) return;
-    const data: StoredAppData = { members, wishes, tasks };
-    if (supabase && user) {
-      setSaveStatus("正在保存到 Supabase...");
-      supabase
-        .from("app_state")
-        .upsert({ user_id: user.id, data, updated_at: new Date().toISOString() })
-        .then(({ error }) => {
-          setSaveStatus(error ? `云端保存失败：${error.message}` : "已保存到 Supabase");
-        });
-    } else {
-      window.localStorage.setItem(storageKey, JSON.stringify(data));
-      setSaveStatus(isSupabaseConfigured ? "未登录，已保存到本地演示数据" : "已保存到本地演示数据");
-    }
-  }, [hasLoadedStoredData, members, wishes, tasks, user]);
+    if (!account?.member_id || !members.some((member) => member.id === account.member_id)) return;
+    setCurrentUserId(account.member_id);
+  }, [account?.member_id, members]);
 
   useEffect(() => {
     if (!supabase) {
+      try {
+        const rawData = window.localStorage.getItem(storageKey);
+        if (rawData) {
+          const storedData = JSON.parse(rawData) as StoredAppData;
+          applyStoredData(storedData);
+        }
+      } finally {
+        setIsSessionLoading(false);
+        setHasLoadedStoredData(true);
+      }
+      return;
+    }
+
+    const savedToken = window.localStorage.getItem(sessionStorageKey);
+    if (!savedToken) {
       setIsSessionLoading(false);
       setHasLoadedStoredData(true);
       return;
@@ -254,94 +269,71 @@ export default function Home() {
 
     const sessionTimeout = window.setTimeout(() => {
       setIsSessionLoading(false);
+      setHasLoadedStoredData(true);
       setAuthMessage("登录状态检查超时，请确认 Supabase 环境变量和网络配置。");
     }, 8000);
 
-    supabase.auth.getSession().then(({ data }) => {
+    loadAppSession(savedToken).finally(() => {
       window.clearTimeout(sessionTimeout);
-      const sessionUser = data.session?.user ?? null;
-      setUser(sessionUser);
-      if (sessionUser) {
-        loadProfile(sessionUser);
-        loadCloudData(sessionUser.id);
-      } else {
-        setHasLoadedStoredData(true);
-      }
       setIsSessionLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      window.clearTimeout(sessionTimeout);
-      const nextUser = session?.user ?? null;
-      setUser(nextUser);
-      setAuthMessage("");
-      if (nextUser) {
-        loadProfile(nextUser);
-        loadCloudData(nextUser.id);
-      } else {
-        setProfile(null);
-        setHasLoadedStoredData(true);
-        setSaveStatus("未登录，已保存到本地演示数据");
-      }
-      setIsSessionLoading(false);
-    });
-
-    return () => {
-      window.clearTimeout(sessionTimeout);
-      listener.subscription.unsubscribe();
-    };
+    return () => window.clearTimeout(sessionTimeout);
   }, []);
 
-  async function loadCloudData(userId: string) {
-    if (!supabase) return;
-    setHasLoadedStoredData(false);
-    const { data, error } = await supabase.from("app_state").select("data").eq("user_id", userId).maybeSingle();
-    if (error) {
-      setAuthMessage(`读取云端数据失败：${error.message}`);
-      setHasLoadedStoredData(true);
-      return;
+  useEffect(() => {
+    if (!hasLoadedStoredData) return;
+    const data: StoredAppData = { members, wishes, tasks };
+    if (supabase && account && sessionToken) {
+      setSaveStatus("正在保存到 Supabase...");
+      supabase
+        .rpc("save_app_state", { p_token: sessionToken, p_state_data: data })
+        .then(({ error }) => {
+          setSaveStatus(error ? `云端保存失败：${error.message}` : "已保存到 Supabase");
+        });
+    } else if (!supabase) {
+      window.localStorage.setItem(storageKey, JSON.stringify(data));
+      setSaveStatus("已保存到本地演示数据");
+    } else {
+      setSaveStatus("未登录");
     }
-    const storedData = data?.data as Partial<StoredAppData> | undefined;
-    if (storedData?.members && storedData?.wishes && storedData?.tasks) {
+  }, [hasLoadedStoredData, members, wishes, tasks, account, sessionToken]);
+
+  function applyStoredData(storedData: Partial<StoredAppData> | undefined) {
+    if (!storedData) return;
+    if (Array.isArray(storedData.members) && Array.isArray(storedData.wishes) && Array.isArray(storedData.tasks)) {
       setMembers(storedData.members);
       setWishes(storedData.wishes);
       setTasks(storedData.tasks);
     }
+  }
+
+  function applyAuthPayload(payload: { token?: string; account?: AppAccount; data?: Partial<StoredAppData> }) {
+    if (!payload.token || !payload.account) {
+      setAuthMessage("登录返回数据不完整。");
+      return;
+    }
+    setSessionToken(payload.token);
+    setAccount(payload.account);
+    window.localStorage.setItem(sessionStorageKey, payload.token);
+    applyStoredData(payload.data);
     setHasLoadedStoredData(true);
     setSaveStatus("已连接 Supabase");
   }
 
-  async function loadProfile(nextUser: User) {
+  async function loadAppSession(token: string) {
     if (!supabase) return;
-    const email = nextUser.email ?? "";
-    const fallbackName = nextUser.user_metadata?.name ?? nextUser.user_metadata?.user_name ?? email.split("@")[0] ?? "家庭成员";
-    const nextProfile: Profile = {
-      user_id: nextUser.id,
-      email,
-      display_name: fallbackName,
-      updated_at: new Date().toISOString()
-    };
-
-    const { data, error } = await supabase.from("profiles").select("*").eq("user_id", nextUser.id).maybeSingle();
+    setHasLoadedStoredData(false);
+    const { data, error } = await supabase.rpc("get_app_state", { p_token: token });
     if (error) {
-      setAccountMessage(`读取账号资料失败：${error.message}`);
+      window.localStorage.removeItem(sessionStorageKey);
+      setSessionToken(null);
+      setAccount(null);
+      setAuthMessage(`登录已失效：${error.message}`);
+      setHasLoadedStoredData(true);
       return;
     }
-    if (data) {
-      setProfile(data as Profile);
-      return;
-    }
-
-    const { data: created, error: createError } = await supabase
-      .from("profiles")
-      .insert(nextProfile)
-      .select("*")
-      .single();
-    if (createError) {
-      setAccountMessage(`创建账号资料失败：${createError.message}`);
-      return;
-    }
-    setProfile(created as Profile);
+    applyAuthPayload({ token, ...(data as { account: AppAccount; data: Partial<StoredAppData> }) });
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -351,84 +343,80 @@ export default function Home() {
       return;
     }
     const data = new FormData(event.currentTarget);
-    const email = String(data.get("email") ?? "").trim();
+    const username = normalizeUsername(String(data.get("identifier") ?? ""));
     const password = String(data.get("password") ?? "");
-    if (!email || !password) return;
+    const confirmPassword = String(data.get("confirmPassword") ?? "");
+    const parentTitle = String(data.get("parentTitle") ?? "爸爸") as ParentTitle;
+    if (!username || !password) return;
+    if (!validateUsername(username)) {
+      setAuthMessage("账号只能包含小写字母、数字、下划线，长度 3 到 32 位。");
+      return;
+    }
+    if (!validatePassword(password)) {
+      setAuthMessage("密码至少 8 位，并且必须包含字母和数字。");
+      return;
+    }
+    if (authMode === "signup" && password !== confirmPassword) {
+      setAuthMessage("两次输入的密码不一致。");
+      return;
+    }
 
     setIsAuthLoading(true);
     setAuthMessage("");
-    const result =
+    const result = await (
       authMode === "login"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
+        ? supabase.rpc("login_app_account", { p_username: username, p_password: password })
+        : supabase.rpc("register_app_account", {
+            p_username: username,
+            p_password: password,
+            p_display_name: username,
+            p_parent_title: parentTitle
+          })
+    );
 
     setIsAuthLoading(false);
     if (result.error) {
       setAuthMessage(result.error.message);
       return;
     }
-    setAuthMessage(authMode === "signup" ? "注册成功。如 Supabase 开启邮箱验证，请先查收验证邮件。" : "登录成功。");
+    applyAuthPayload(result.data as { token: string; account: AppAccount; data: Partial<StoredAppData> });
+    setAuthMessage(authMode === "signup" ? "注册成功。" : "登录成功。");
   }
 
   async function saveAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!supabase || !user) return;
+    if (!supabase || !sessionToken || !account) return;
     const data = new FormData(event.currentTarget);
     const displayName = String(data.get("displayName") ?? "").trim();
     const newPassword = String(data.get("newPassword") ?? "");
     if (!displayName) return;
 
     setAccountMessage("");
-    const { data: savedProfile, error: profileError } = await supabase
-      .from("profiles")
-      .upsert({
-        user_id: user.id,
-        email: user.email ?? "",
-        display_name: displayName,
-        updated_at: new Date().toISOString()
-      })
-      .select("*")
-      .single();
-
-    if (profileError) {
-      setAccountMessage(`保存账号资料失败：${profileError.message}`);
-      return;
-    }
-    setProfile(savedProfile as Profile);
-
     if (newPassword) {
-      const { error: passwordError } = await supabase.auth.updateUser({ password: newPassword });
-      if (passwordError) {
-        setAccountMessage(`资料已保存，但密码修改失败：${passwordError.message}`);
+      if (!validatePassword(newPassword)) {
+        setAccountMessage("新密码至少 8 位，并且必须包含字母和数字。");
         return;
       }
-      event.currentTarget.reset();
     }
+    const { data: savedAccount, error } = await supabase.rpc("update_app_account", {
+      p_token: sessionToken,
+      p_display_name: displayName,
+      p_new_password: newPassword || null
+    });
+    if (error) {
+      setAccountMessage(`保存账号资料失败：${error.message}`);
+      return;
+    }
+    const nextAccount = (savedAccount as { account: AppAccount }).account;
+    setAccount(nextAccount);
+    if (newPassword) event.currentTarget.reset();
     setAccountMessage("账号资料已保存。");
   }
 
-  async function signInWithGithub() {
-    if (!supabase) {
-      setAuthMessage("请先配置 Supabase 环境变量。");
-      return;
-    }
-    setIsAuthLoading(true);
-    setAuthMessage("");
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "github",
-      options: {
-        redirectTo: window.location.origin
-      }
-    });
-    setIsAuthLoading(false);
-    if (error) setAuthMessage(error.message);
-  }
-
   async function signOut() {
-    if (!supabase) return;
-    await supabase.auth.signOut();
-    setUser(null);
-    setProfile(null);
+    window.localStorage.removeItem(sessionStorageKey);
+    setSessionToken(null);
+    setAccount(null);
     setAuthMessage("已退出登录。");
   }
 
@@ -550,15 +538,18 @@ export default function Home() {
     if (editingTaskId === taskId) setEditingTaskId(null);
   }
 
-  function saveMember(event: FormEvent<HTMLFormElement>) {
+  async function saveMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const name = String(data.get("name") ?? "").trim();
     if (!name || currentUser.role !== "parent") return;
-    const role = String(data.get("role")) as Role;
-    const title = String(data.get("title")) as ParentTitle;
-    const gender = String(data.get("gender")) as ChildGender;
-    const childTitle = String(data.get("childTitle")) as ChildTitle;
+    const role = (editingMember?.role ?? String(data.get("role") ?? "child")) as Role;
+    const title = String(data.get("title") ?? "妈妈") as ParentTitle;
+    const gender = (role === "child" ? String(data.get("gender") ?? "男孩") : "男孩") as ChildGender;
+    const childTitle = (role === "child" ? String(data.get("childTitle") ?? "弟弟") : "弟弟") as ChildTitle;
+    const memberUsername = normalizeUsername(String(data.get("memberUsername") ?? ""));
+    const memberPassword = String(data.get("memberPassword") ?? "");
+    const memberConfirmPassword = String(data.get("memberConfirmPassword") ?? "");
 
     const nextMember = {
       name,
@@ -576,19 +567,44 @@ export default function Home() {
       setMemberFormRole("child");
       setActiveView("wall");
     } else {
-      setMembers((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          ...nextMember
-        }
-      ]);
+      if (!supabase || !sessionToken) return;
+      if (!validateUsername(memberUsername)) {
+        setAccountMessage("成员账号只能包含小写字母、数字、下划线，长度 3 到 32 位。");
+        return;
+      }
+      if (!validatePassword(memberPassword)) {
+        setAccountMessage("成员初始密码至少 8 位，并且必须包含字母和数字。");
+        return;
+      }
+      if (memberPassword !== memberConfirmPassword) {
+        setAccountMessage("成员账号两次输入的密码不一致。");
+        return;
+      }
+
+      const { data: memberResult, error } = await supabase.rpc("create_family_member_account", {
+        p_token: sessionToken,
+        p_username: memberUsername,
+        p_password: memberPassword,
+        p_display_name: name,
+        p_role: role,
+        p_parent_title: title,
+        p_gender: gender,
+        p_child_title: childTitle
+      });
+
+      if (error) {
+        setAccountMessage(`创建家庭成员账号失败：${error.message}`);
+        return;
+      }
+
+      applyStoredData((memberResult as { data: Partial<StoredAppData> }).data);
+      setAccountMessage(role === "parent" ? "父母账号已创建。" : "孩子账号已创建。");
       setMemberFormRole("child");
     }
     event.currentTarget.reset();
   }
 
-  function deleteMember(memberId: string) {
+  function removeMemberFromState(memberId: string) {
     if (memberId === currentUser.id) return;
     setMembers((current) => current.filter((member) => member.id !== memberId));
     setWishes((current) => current.filter((wish) => wish.childId !== memberId));
@@ -598,6 +614,29 @@ export default function Home() {
         .map((task) => (task.assigneeId === memberId ? { ...task, assigneeId: undefined, status: "待申领", submitted: false } : task))
     );
     if (editingMemberId === memberId) setEditingMemberId(null);
+  }
+
+  async function deleteMember(memberId: string) {
+    if (memberId === currentUser.id) return;
+    if (!supabase || !sessionToken) {
+      removeMemberFromState(memberId);
+      return;
+    }
+
+    setAccountMessage("");
+    const { data, error } = await supabase.rpc("delete_family_member_account", {
+      p_token: sessionToken,
+      p_member_id: memberId
+    });
+
+    if (error) {
+      setAccountMessage(`删除家庭成员账号失败：${error.message}`);
+      return;
+    }
+
+    applyStoredData((data as { data: Partial<StoredAppData> }).data);
+    if (editingMemberId === memberId) setEditingMemberId(null);
+    setAccountMessage("家庭成员账号已删除。");
   }
 
   function claimTask(taskId: string) {
@@ -664,23 +703,65 @@ export default function Home() {
     );
   }
 
-  if (!user) {
+  if (!account) {
     return (
       <main className="app-shell auth-shell">
         <section className="login-card">
           <p className="eyebrow">家庭许愿墙</p>
           <h1>登录后管理家庭愿望和任务</h1>
-          <p>请输入账号密码登录。没有账号可以先注册。</p>
+          <p>请输入应用账号和密码登录。没有账号可以先注册。</p>
           {!isSupabaseConfigured && <p className="auth-message">请先配置 Supabase 环境变量。</p>}
           <form className="login-form" onSubmit={submitAuth}>
             <label>
-              邮箱
-              <input name="email" type="email" placeholder="you@example.com" disabled={!isSupabaseConfigured || isAuthLoading} required />
+              账号
+              <input name="identifier" placeholder="例如 dony" disabled={!isSupabaseConfigured || isAuthLoading} required />
             </label>
             <label>
               密码
-              <input name="password" type="password" placeholder="请输入密码" disabled={!isSupabaseConfigured || isAuthLoading} required />
+              <span className="password-field">
+                <input
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder="请输入密码"
+                  disabled={!isSupabaseConfigured || isAuthLoading}
+                  required
+                />
+                <button type="button" aria-label={showPassword ? "隐藏密码" : "显示密码"} onClick={() => setShowPassword((current) => !current)}>
+                  {showPassword ? "隐藏" : "显示"}
+                </button>
+              </span>
             </label>
+            {authMode === "signup" && (
+              <>
+                <label>
+                  父母身份
+                  <select name="parentTitle" disabled={!isSupabaseConfigured || isAuthLoading} defaultValue="爸爸">
+                    <option>爸爸</option>
+                    <option>妈妈</option>
+                  </select>
+                </label>
+                <label>
+                  确认密码
+                  <span className="password-field">
+                    <input
+                      name="confirmPassword"
+                      type={showConfirmPassword ? "text" : "password"}
+                      placeholder="请再次输入密码"
+                      disabled={!isSupabaseConfigured || isAuthLoading}
+                      required
+                    />
+                    <button
+                      type="button"
+                      aria-label={showConfirmPassword ? "隐藏确认密码" : "显示确认密码"}
+                      onClick={() => setShowConfirmPassword((current) => !current)}
+                    >
+                      {showConfirmPassword ? "隐藏" : "显示"}
+                    </button>
+                  </span>
+                </label>
+              </>
+            )}
+            <small>账号只能包含小写字母、数字、下划线；密码至少 8 位，并且必须包含字母和数字，字母区分大小写。</small>
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!isSupabaseConfigured || isAuthLoading}>
                 {authMode === "login" ? "登录" : "注册"}
@@ -692,14 +773,6 @@ export default function Home() {
                 onClick={() => setAuthMode((current) => (current === "login" ? "signup" : "login"))}
               >
                 切换到{authMode === "login" ? "注册" : "登录"}
-              </button>
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={!isSupabaseConfigured || isAuthLoading}
-                onClick={signInWithGithub}
-              >
-                GitHub 登录
               </button>
             </div>
           </form>
@@ -717,7 +790,7 @@ export default function Home() {
           <h1>把愿望、任务和兑现放到同一面墙上</h1>
         </div>
         <label className="account-switcher">
-          <span>{roleLabel}</span>
+          <span>家庭角色：{roleLabel}</span>
           <select
             data-testid="account-select"
             value={currentUserId}
@@ -733,7 +806,7 @@ export default function Home() {
           >
             {members.map((member) => (
               <option key={member.id} value={member.id}>
-                {member.name} · {member.role === "parent" ? "父母" : "孩子"}
+                {member.name} · {getFamilyRoleLabel(member)}
               </option>
             ))}
           </select>
@@ -744,14 +817,19 @@ export default function Home() {
         <div>
           <strong>账号管理</strong>
           <p>
-            当前登录：{user.email ?? user.id}
+            当前登录：{account.username}
           </p>
-          <p>账号昵称：{profile?.display_name ?? "未设置"}</p>
+          <p>账号昵称：{account.display_name ?? "未设置"}</p>
           <small>{saveStatus}</small>
         </div>
-        <form className="account-form" key={profile?.updated_at ?? profile?.display_name ?? user.id} onSubmit={saveAccount}>
-          <input name="displayName" defaultValue={profile?.display_name ?? ""} placeholder="账号昵称" required />
-          <input name="newPassword" type="password" placeholder="新密码，可不填" />
+        <form className="account-form" key={account.updated_at ?? account.display_name ?? account.id} onSubmit={saveAccount}>
+          <input name="displayName" defaultValue={account.display_name ?? ""} placeholder="账号昵称" required />
+          <span className="password-field">
+            <input name="newPassword" type={showNewPassword ? "text" : "password"} placeholder="新密码，可不填" />
+            <button type="button" aria-label={showNewPassword ? "隐藏新密码" : "显示新密码"} onClick={() => setShowNewPassword((current) => !current)}>
+              {showNewPassword ? "隐藏" : "显示"}
+            </button>
+          </span>
           <button className="primary-button" type="submit">保存账号</button>
           <button className="secondary-button" type="button" onClick={signOut}>
             退出登录
@@ -1105,22 +1183,67 @@ export default function Home() {
       {activeView === "family" && currentUser.role === "parent" && (
         <section className="workspace two-column">
           <form className="panel form-panel" key={editingMember?.id ?? "new-member"} onSubmit={saveMember}>
-            <h2>{editingMember ? "编辑家庭成员" : "添加家庭成员"}</h2>
+            <h2>{editingMember ? "编辑家庭成员" : "添加家庭成员账号"}</h2>
             <label>
-              姓名
+              成员姓名
               <input name="name" defaultValue={editingMember?.name} placeholder="输入家庭成员昵称" required />
             </label>
             <label>
               角色
-              <select name="role" value={memberFormRole} onChange={(event) => setMemberFormRole(event.target.value as Role)}>
+              <select
+                name="role"
+                value={memberFormRole}
+                disabled={Boolean(editingMember)}
+                onChange={(event) => setMemberFormRole(event.target.value as Role)}
+              >
                 <option value="child">孩子</option>
                 <option value="parent">父母</option>
               </select>
             </label>
+            {!editingMember && (
+              <>
+                <label>
+                  登录账号
+                  <input name="memberUsername" placeholder={memberFormRole === "parent" ? "例如 amy" : "例如 sophia"} required />
+                </label>
+                <label>
+                  初始密码
+                  <span className="password-field">
+                    <input
+                      name="memberPassword"
+                      type={showMemberPassword ? "text" : "password"}
+                      placeholder="至少 8 位，包含字母和数字"
+                      required
+                    />
+                    <button type="button" aria-label={showMemberPassword ? "隐藏初始密码" : "显示初始密码"} onClick={() => setShowMemberPassword((current) => !current)}>
+                      {showMemberPassword ? "隐藏" : "显示"}
+                    </button>
+                  </span>
+                </label>
+                <label>
+                  确认初始密码
+                  <span className="password-field">
+                    <input
+                      name="memberConfirmPassword"
+                      type={showMemberConfirmPassword ? "text" : "password"}
+                      placeholder="再次输入初始密码"
+                      required
+                    />
+                    <button
+                      type="button"
+                      aria-label={showMemberConfirmPassword ? "隐藏确认初始密码" : "显示确认初始密码"}
+                      onClick={() => setShowMemberConfirmPassword((current) => !current)}
+                    >
+                      {showMemberConfirmPassword ? "隐藏" : "显示"}
+                    </button>
+                  </span>
+                </label>
+              </>
+            )}
             {memberFormRole === "parent" && (
               <label>
                 父母身份
-                <select name="title" defaultValue={editingMember?.title ?? "爸爸"}>
+                <select name="title" defaultValue={editingMember?.title ?? "妈妈"}>
                   <option>爸爸</option>
                   <option>妈妈</option>
                 </select>
@@ -1148,7 +1271,7 @@ export default function Home() {
             )}
             <div className="form-actions">
               <button className="primary-button" type="submit">
-                {editingMember ? "保存成员" : "添加成员"}
+                {editingMember ? "保存成员资料" : "创建成员账号"}
               </button>
               {editingMember && (
                 <button
@@ -1179,6 +1302,7 @@ export default function Home() {
                       ? member.title ?? "父母"
                       : `${member.childTitle ?? "孩子"} · ${member.gender ?? "未设置性别"}`}
                   </span>
+                  {member.accountUsername && <small>账号：{member.accountUsername}</small>}
                   <div className="card-actions">
                     <button
                       className="secondary-button"

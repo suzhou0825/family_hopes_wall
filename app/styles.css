@@ -82,6 +82,23 @@ button:disabled {
   font-weight: 700;
 }
 
+.password-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.password-field button {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--blue);
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
 .topbar {
   position: relative;
   overflow: hidden;

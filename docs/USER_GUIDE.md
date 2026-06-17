@@ -9,7 +9,7 @@
 
 ## Supabase 配置
 
-当前已接入 Supabase 登录和数据库保存。
+当前已接入 Supabase 数据库保存。登录使用本应用自己的账号体系，不使用 Supabase Auth 作为家庭成员登录账号。
 
 配置步骤：
 
@@ -23,42 +23,38 @@
 
 不要把 Supabase `service_role` key 写进前端或发给别人。
 当前本地已配置 Supabase 项目 `jqlgnsatgvwjadbzghfr`。
-当前 Supabase 需要执行最新的 `supabase/schema.sql`，创建 `profiles`、`app_state` 表和 RLS 策略。
+当前 Supabase 需要执行最新的 `supabase/schema.sql`，创建 `app_families`、`app_accounts`、`app_sessions`、`app_family_data` 和 RPC 函数。
+执行最新脚本后，旧版本遗留的 `profiles`、`app_state`、`app_data` 会被删除。
 如果页面一直停在“正在检查登录状态”，优先检查 Vercel 或本地环境变量是否配置了 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY`。
-
-## GitHub 登录配置
-
-前端已支持 GitHub 登录按钮。还需要在 Supabase 后台启用 GitHub Provider。
-
-配置步骤：
-
-- 在 GitHub 创建 OAuth App。
-- Authorization callback URL 填 Supabase 给出的回调地址，格式通常是：
-  - `https://jqlgnsatgvwjadbzghfr.supabase.co/auth/v1/callback`
-- 在 Supabase Dashboard 打开 Authentication -> Providers -> GitHub。
-- 启用 GitHub Provider。
-- 填入 GitHub OAuth App 的 Client ID 和 Client Secret。
-- 在 Supabase Authentication URL 配置里确认 Site URL 包含本地地址：
-  - `http://localhost:3333`
-- 部署到外网后，还需要把外网域名加入 Supabase Site URL / Redirect URLs。
-
-不要把 GitHub Client Secret 写进前端代码或 `.env.local`。
-
-如果出现以下错误：
-
-`Unsupported provider: provider is not enabled`
-
-说明 Supabase 的 GitHub Provider 还没有启用，或 Client ID/Client Secret 没有保存成功。需要回到 Supabase Dashboard 的 Authentication -> Providers -> GitHub 检查并启用。
 
 ## 数据保存
 
-- 登录 Supabase 后，数据保存到 Supabase 的 `app_state` 表。
-- 未配置或未登录 Supabase 时，数据保存到浏览器 `localStorage`。
+- 登录应用账号后，数据通过 Supabase RPC 保存到 `app_family_data` 表。
+- 账号密码保存在 `app_accounts` 表，其中密码只保存哈希。
+- 登录会话保存在 `app_sessions` 表，浏览器本地只保存会话 token。
+- 未配置 Supabase 时，数据保存到浏览器 `localStorage`，仅用于开发兜底。
 - 当前第一版云端数据以 JSON 形式保存，后续会拆成家庭成员、愿望、任务、打卡记录等独立数据表。
+- 本地调试和 Vercel 线上环境使用同一个 Supabase 项目时，登录同一账号可以看到同一份云端数据。
 
 ## 账号切换
 
-打开网页后必须先登录账号密码，也可以使用 GitHub 登录。登录后页面右上角仍保留家庭成员视角切换，用于在当前家庭数据中切换父母/孩子视角。
+打开网页后必须先登录应用账号。登录后页面右上角保留家庭角色切换，用于在当前家庭数据中选择爸爸、妈妈、哥哥、弟弟、姐姐或妹妹视角。
+
+注册规则：
+
+- 只使用普通账号注册，不使用邮箱登录。
+- 主动注册只能注册父母账号。
+- 注册时必须选择父母身份：爸爸或妈妈。
+- 主动注册会创建一个新家庭。
+- 第二个父母账号应由已登录父母在家庭管理中创建，不能通过主动注册加入同一个家庭。
+- 账号只能包含小写字母、数字、下划线，长度 3 到 32 位。
+- 注册时必须输入两次密码。
+- 两次密码必须一致。
+- 密码至少 8 位。
+- 密码必须同时包含字母和数字。
+- 字母区分大小写。
+- 登录、注册和修改密码的密码框支持显示/隐藏密码。
+- 父母创建孩子账号时，初始密码和确认初始密码也支持显示/隐藏。
 
 ## 账号管理
 
@@ -66,15 +62,17 @@
 
 支持：
 
-- 查看当前登录邮箱
+- 查看当前登录账号
+- 查看或保存账号昵称
 - 编辑账号昵称
 - 修改密码
 - 退出登录
 
-账号昵称保存到 Supabase `profiles` 表。邮箱和密码由 Supabase Auth 管理。
+账号名、账号昵称保存到 Supabase `app_accounts` 表。密码只保存哈希，不在前端保存明文。
 
 - 父母账号：可以访问任务发布和家庭管理。
 - 孩子账号：可以访问许愿板块、我的任务，并在许愿墙申领任务。
+- 父母账号和孩子账号都可以由已登录父母在家庭管理中创建，用于加入同一个家庭。
 
 ## 孩子使用流程
 
@@ -132,20 +130,34 @@
 
 ### 家庭管理
 
-父母可以添加或编辑家庭成员。
+父母可以添加父母账号、添加孩子账号，或编辑家庭成员资料。
 
-添加或编辑父母时：
+添加父母账号时：
 
-- 设置姓名
-- 设置角色为父母
-- 选择爸爸或妈妈
+- 设置父母姓名
+- 设置登录账号
+- 设置初始密码并确认密码
+- 选择父母身份：爸爸或妈妈
 
-添加或编辑孩子时：
+添加孩子账号时：
 
-- 设置姓名
-- 设置角色为孩子
+- 设置孩子姓名
+- 设置孩子登录账号
+- 设置孩子初始密码并确认密码
 - 选择性别：男孩或女孩
 - 选择家庭称呼：哥哥、弟弟、姐姐、妹妹
+
+编辑孩子资料时：
+
+- 设置姓名
+- 选择性别：男孩或女孩
+- 选择家庭称呼：哥哥、弟弟、姐姐、妹妹
+
+删除家庭成员时：
+
+- 会同步删除该成员的登录账号和会话。
+- 不能删除当前正在登录的账号。
+- 删除孩子会同步移除孩子的愿望，并把孩子申领中的任务恢复为待申领。
 
 ## 状态说明
 
