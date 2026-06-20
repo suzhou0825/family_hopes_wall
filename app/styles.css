@@ -517,6 +517,12 @@ input[type="checkbox"] {
 .dashboard-card h2 { margin-top: 26px; font-size: 26px; }
 .dashboard-card > p { color: var(--muted); line-height: 1.7; }
 
+.wish-zone > h2,
+.task-zone > h2 {
+  margin-top: auto;
+  padding-top: 26px;
+}
+
 .dashboard-live-preview {
   position: relative;
   height: 220px;
@@ -711,6 +717,22 @@ input[type="checkbox"] {
 .detail-text {
   margin-bottom: 10px;
   line-height: 1.65;
+}
+
+.submitted-time {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+}
+
+.form-message {
+  margin: 0;
+  border: 1px solid rgba(215, 102, 87, 0.28);
+  border-radius: 14px;
+  background: rgba(215, 102, 87, 0.08);
+  color: var(--coral);
+  padding: 11px 13px;
+  font-weight: 700;
 }
 
 .status {

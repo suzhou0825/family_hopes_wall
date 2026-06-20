@@ -11,7 +11,7 @@ type ChildTitle = "哥哥" | "弟弟" | "姐姐" | "妹妹";
 type WishStatus = "待申领" | "兑换中" | "兑现中" | "已兑换";
 type TaskStatus = "待申领" | "完成中" | "已完成";
 type TaskApprovalStatus = "待审批" | "已通过";
-type WishType = "物质奖励" | "旅游奖励" | "陪玩奖励" | "其他愿望";
+type WishType = "物质奖励" | "旅游奖励" | "陪玩奖励" | "积分奖励" | "其他愿望";
 type TaskType = "打卡任务" | "一次性任务" | "承诺任务";
 type Weekday = "周一" | "周二" | "周三" | "周四" | "周五" | "周六" | "周日";
 type AppView = "home" | "wall" | "wishes" | "myTasks" | "tasks" | "family" | "account" | "points";
@@ -62,6 +62,8 @@ type Wish = {
   fulfiller: ParentTitle;
   expectedDate?: string;
   status: WishStatus;
+  rewardPoints?: number;
+  submittedAt?: string;
 };
 
 type Task = {
@@ -84,6 +86,8 @@ type Task = {
   proposalDescription?: string;
   suggestedPoints?: number;
   proposerId?: string;
+  rewardPoints?: number;
+  submittedAt?: string;
 };
 
 const weekdays: Weekday[] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -119,6 +123,38 @@ function getMemberAvatar(member: Member) {
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function submittedNow() {
+  return new Date().toISOString();
+}
+
+function formatSubmittedAt(value?: string) {
+  if (!value) return "历史数据未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "历史数据未记录";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
+function normalizedTitle(value: string) {
+  return value.trim().toLocaleLowerCase("zh-CN");
+}
+
+function copiedDeadline(task: Task) {
+  if (task.type !== "打卡任务" || !task.deadline) return undefined;
+  const start = new Date(`${task.createdAt}T00:00:00`);
+  const end = new Date(`${task.deadline}T00:00:00`);
+  const duration = Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) ? 7 : Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000));
+  const nextEnd = new Date(`${todayKey()}T00:00:00`);
+  nextEnd.setDate(nextEnd.getDate() + duration);
+  return nextEnd.toISOString().slice(0, 10);
 }
 
 function dateToWeekday(date: Date): Weekday {
@@ -247,7 +283,14 @@ export default function Home() {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [taskFormType, setTaskFormType] = useState<TaskType>("打卡任务");
+  const [proposalTaskType, setProposalTaskType] = useState<TaskType>("一次性任务");
+  const [wishFormType, setWishFormType] = useState<WishType>("物质奖励");
+  const [taskRewardType, setTaskRewardType] = useState<WishType>("物质奖励");
+  const [proposalRewardType, setProposalRewardType] = useState<WishType>("积分奖励");
   const [memberFormRole, setMemberFormRole] = useState<Role>("child");
+  const [wishFormMessage, setWishFormMessage] = useState("");
+  const [taskFormMessage, setTaskFormMessage] = useState("");
+  const [proposalFormMessage, setProposalFormMessage] = useState("");
 
   const currentUser =
     members.find((member) => member.id === account?.member_id) ??
@@ -472,7 +515,18 @@ export default function Home() {
     const title = String(data.get("title") ?? "").trim();
     const description = String(data.get("description") ?? "").trim();
     const expectedDate = String(data.get("expectedDate") ?? "");
+    const type = String(data.get("type")) as WishType;
+    const rewardPoints = Number(data.get("wishRewardPoints") ?? 0);
     if (!title || currentUser.role !== "child") return;
+    setWishFormMessage("");
+    if (wishes.some((wish) => wish.status !== "已兑换" && wish.id !== editingWishId && normalizedTitle(wish.title) === normalizedTitle(title))) {
+      setWishFormMessage("愿望名重复，请修改后再提交。");
+      return;
+    }
+    if (type === "积分奖励" && (!Number.isFinite(rewardPoints) || rewardPoints <= 0)) {
+      setWishFormMessage("积分奖励必须填写大于 0 的积分数量。");
+      return;
+    }
 
     if (editingWishId) {
       setWishes((current) =>
@@ -482,7 +536,8 @@ export default function Home() {
                 ...wish,
                 title,
                 description,
-                type: String(data.get("type")) as WishType,
+                type,
+                rewardPoints: type === "积分奖励" ? rewardPoints : undefined,
                 fulfiller: String(data.get("fulfiller")) as ParentTitle,
                 expectedDate: expectedDate || undefined
               }
@@ -495,16 +550,19 @@ export default function Home() {
         id: crypto.randomUUID(),
         title,
         description,
-        type: String(data.get("type")) as WishType,
+        type,
         childId: currentUser.id,
         fulfiller: String(data.get("fulfiller")) as ParentTitle,
         expectedDate: expectedDate || undefined,
-        status: "待申领"
+        status: "待申领",
+        rewardPoints: type === "积分奖励" ? rewardPoints : undefined,
+        submittedAt: submittedNow()
       };
 
       setWishes((current) => [wish, ...current]);
     }
     event.currentTarget.reset();
+    setWishFormType("物质奖励");
   }
 
   function deleteWish(wishId: string) {
@@ -523,8 +581,18 @@ export default function Home() {
     const type = String(data.get("type")) as TaskType;
     const checkInDays = data.getAll("checkInDays").map(String) as Weekday[];
     const deadline = String(data.get("deadline") ?? "");
+    const rewardPoints = Number(data.get("taskRewardPoints") ?? 0);
     if (!title || !rewardDescription || currentUser.role !== "parent") return;
+    setTaskFormMessage("");
+    if (tasks.some((task) => task.status !== "已完成" && task.id !== editingTaskId && normalizedTitle(task.title) === normalizedTitle(title))) {
+      setTaskFormMessage("任务名重复，请修改后再提交。");
+      return;
+    }
     if (type === "打卡任务" && (!checkInDays.length || !deadline)) return;
+    if (rewardType === "积分奖励" && (!Number.isFinite(rewardPoints) || rewardPoints <= 0)) {
+      setTaskFormMessage("积分奖励必须填写大于 0 的积分数量。");
+      return;
+    }
 
     const nextLinkedWishId = linkedWishId || undefined;
     const newTask: Task = {
@@ -534,7 +602,9 @@ export default function Home() {
       creatorId: currentUser.id,
       rewardType,
       rewardDescription,
+      rewardPoints: rewardType === "积分奖励" ? rewardPoints : undefined,
       createdAt: todayKey(),
+      submittedAt: submittedNow(),
       linkedWishId: nextLinkedWishId,
       status: "待申领",
       approvalStatus: "已通过",
@@ -552,6 +622,7 @@ export default function Home() {
                 reward: undefined,
                 rewardType,
                 rewardDescription,
+                rewardPoints: rewardType === "积分奖励" ? rewardPoints : undefined,
                 linkedWishId: nextLinkedWishId,
                 checkInDays: type === "打卡任务" ? checkInDays : undefined,
                 deadline: type === "打卡任务" ? deadline : undefined,
@@ -564,6 +635,7 @@ export default function Home() {
     refreshWishProgress(nextTasks);
     setEditingTaskId(null);
     setTaskFormType("打卡任务");
+    setTaskRewardType("物质奖励");
     event.currentTarget.reset();
   }
 
@@ -574,8 +646,29 @@ export default function Home() {
     const title = String(data.get("proposalTitle") ?? "").trim();
     const description = String(data.get("proposalDescription") ?? "").trim();
     const suggestedPoints = Number(data.get("suggestedPoints") ?? 0);
+    const rewardType = String(data.get("proposalRewardType") ?? "积分奖励") as WishType;
+    const proposedRewardDescription = String(data.get("proposalRewardDescription") ?? "").trim();
     const type = String(data.get("proposalType") ?? "一次性任务") as TaskType;
-    if (!title || !description || !Number.isFinite(suggestedPoints) || suggestedPoints < 0) return;
+    const proposalCheckInDays = data.getAll("proposalCheckInDays").map(String) as Weekday[];
+    const proposalDeadline = String(data.get("proposalDeadline") ?? "");
+    if (!title || !description) return;
+    setProposalFormMessage("");
+    if (tasks.some((task) => task.status !== "已完成" && normalizedTitle(task.title) === normalizedTitle(title))) {
+      setProposalFormMessage("任务名重复，请修改后再提交。");
+      return;
+    }
+    if (rewardType === "积分奖励" && (!Number.isFinite(suggestedPoints) || suggestedPoints <= 0)) {
+      setProposalFormMessage("积分奖励必须填写大于 0 的建议积分。");
+      return;
+    }
+    if (rewardType !== "积分奖励" && !proposedRewardDescription) {
+      setProposalFormMessage("请选择奖励类型并填写建议奖励说明。");
+      return;
+    }
+    if (type === "打卡任务" && (!proposalCheckInDays.length || !proposalDeadline)) {
+      setProposalFormMessage("打卡任务必须选择打卡频率并设置截止时间。");
+      return;
+    }
 
     setTasks((current) => [{
       id: crypto.randomUUID(),
@@ -584,14 +677,53 @@ export default function Home() {
       creatorId: currentUser.id,
       proposerId: currentUser.id,
       proposalDescription: description,
-      suggestedPoints,
-      rewardType: "其他愿望",
-      rewardDescription: `建议奖励 ${suggestedPoints} 积分，等待父母确认`,
+      suggestedPoints: rewardType === "积分奖励" ? suggestedPoints : undefined,
+      rewardPoints: rewardType === "积分奖励" ? suggestedPoints : undefined,
+      rewardType,
+      rewardDescription: rewardType === "积分奖励" ? `建议奖励 ${suggestedPoints} 积分，等待父母确认` : proposedRewardDescription,
       createdAt: todayKey(),
+      submittedAt: submittedNow(),
       status: "待申领",
-      approvalStatus: "待审批"
+      approvalStatus: "待审批",
+      checkInDays: type === "打卡任务" ? proposalCheckInDays : undefined,
+      deadline: type === "打卡任务" ? proposalDeadline : undefined,
+      checkIns: type === "打卡任务" ? [] : undefined
     }, ...current]);
     event.currentTarget.reset();
+    setProposalRewardType("积分奖励");
+    setProposalTaskType("一次性任务");
+  }
+
+  function copyTask(taskId: string) {
+    if (currentUser.role !== "parent") return;
+    const source = tasks.find((task) => task.id === taskId);
+    if (!source) return;
+    const baseTitle = source.title.replace(/（副本(?: \d+)?）$/, "");
+    let copyIndex = 1;
+    let nextTitle = `${baseTitle}（副本）`;
+    while (tasks.some((task) => task.status !== "已完成" && normalizedTitle(task.title) === normalizedTitle(nextTitle))) {
+      copyIndex += 1;
+      nextTitle = `${baseTitle}（副本 ${copyIndex}）`;
+    }
+    const copiedTask: Task = {
+      ...source,
+      id: crypto.randomUUID(),
+      title: nextTitle,
+      creatorId: currentUser.id,
+      createdAt: todayKey(),
+      submittedAt: submittedNow(),
+      deadline: copiedDeadline(source),
+      linkedWishId: undefined,
+      assigneeId: undefined,
+      status: "待申领",
+      submitted: false,
+      checkIns: source.type === "打卡任务" ? [] : undefined,
+      approvalStatus: "已通过",
+      proposalDescription: undefined,
+      suggestedPoints: undefined,
+      proposerId: undefined
+    };
+    setTasks((current) => [copiedTask, ...current]);
   }
 
   function approveTaskProposal(taskId: string) {
@@ -957,6 +1089,8 @@ export default function Home() {
                   <p>
                     {memberById.get(wish.childId)?.name} · {wish.type} · 期望 {wish.fulfiller} 兑现
                   </p>
+                  {wish.type === "积分奖励" && <small>积分数量：{wish.rewardPoints ?? 0}</small>}
+                  <small className="submitted-time">提交时间：{formatSubmittedAt(wish.submittedAt)}</small>
                   {wish.description && <p className="detail-text">{wish.description}</p>}
                   {wish.expectedDate && <small>期望时间：{wish.expectedDate}</small>}
                   <ProgressRail status={wish.status} />
@@ -985,6 +1119,8 @@ export default function Home() {
                   </div>
                   <p>{task.type} · 奖励：{getRewardType(task)}</p>
                   <p className="detail-text">{getRewardDescription(task)}</p>
+                  {task.rewardType === "积分奖励" && <small>积分数量：{task.rewardPoints ?? 0}</small>}
+                  <small className="submitted-time">提交时间：{formatSubmittedAt(task.submittedAt)}</small>
                   <CheckInProgress task={task} />
                   <small>
                     {task.assigneeId ? `申领人：${memberById.get(task.assigneeId)?.name}` : "等待孩子申领"}
@@ -995,6 +1131,11 @@ export default function Home() {
                       <button className="primary-button" onClick={() => claimTask(task.id)}>
                         申领任务
                       </button>
+                    </div>
+                  )}
+                  {currentUser.role === "parent" && (
+                    <div className="card-actions">
+                      <button className="secondary-button" onClick={() => copyTask(task.id)}>复制同样任务</button>
                     </div>
                   )}
                 </article>
@@ -1023,13 +1164,15 @@ export default function Home() {
             </label>
             <label>
               愿望类型
-              <select name="type" defaultValue={editingWish?.type ?? "物质奖励"}>
+              <select name="type" value={wishFormType} onChange={(event) => setWishFormType(event.target.value as WishType)}>
                 <option>物质奖励</option>
                 <option>旅游奖励</option>
                 <option>陪玩奖励</option>
+                <option>积分奖励</option>
                 <option>其他愿望</option>
               </select>
             </label>
+            {wishFormType === "积分奖励" && <label>积分数量<input name="wishRewardPoints" type="number" min="1" step="10" defaultValue={editingWish?.rewardPoints ?? 50} required /></label>}
             <label>
               希望谁兑现
               <select name="fulfiller" defaultValue={editingWish?.fulfiller ?? "爸爸"}>
@@ -1051,6 +1194,7 @@ export default function Home() {
                 </button>
               )}
             </div>
+            {wishFormMessage && <p className="form-message">{wishFormMessage}</p>}
           </form>
 
           <section>
@@ -1066,10 +1210,12 @@ export default function Home() {
                     <StatusBadge label={wish.status} />
                   </div>
                   <p>{wish.type} · 期望 {wish.fulfiller} 兑现</p>
+                  {wish.type === "积分奖励" && <small>积分数量：{wish.rewardPoints ?? 0}</small>}
+                  <small className="submitted-time">提交时间：{formatSubmittedAt(wish.submittedAt)}</small>
                   {wish.description && <p className="detail-text">{wish.description}</p>}
                   {wish.expectedDate && <small>期望时间：{wish.expectedDate}</small>}
                   <div className="card-actions">
-                    <button className="secondary-button" data-testid={`edit-wish-${wish.id}`} onClick={() => setEditingWishId(wish.id)}>
+                    <button className="secondary-button" data-testid={`edit-wish-${wish.id}`} onClick={() => { setEditingWishId(wish.id); setWishFormType(wish.type); setWishFormMessage(""); }}>
                       编辑
                     </button>
                     <button className="danger-button" data-testid={`delete-wish-${wish.id}`} onClick={() => deleteWish(wish.id)}>
@@ -1104,11 +1250,27 @@ export default function Home() {
             <div className="section-heading"><p>申报新任务</p><strong>提交后等待父母审批</strong></div>
             <label>任务名称<input name="proposalTitle" placeholder="例如：主动整理一周书包" required /></label>
             <label>任务类型
-              <select name="proposalType" defaultValue="一次性任务"><option>打卡任务</option><option>一次性任务</option><option>承诺任务</option></select>
+              <select name="proposalType" value={proposalTaskType} onChange={(event) => setProposalTaskType(event.target.value as TaskType)}><option>打卡任务</option><option>一次性任务</option><option>承诺任务</option></select>
+            </label>
+            {proposalTaskType === "打卡任务" && (
+              <>
+                <fieldset className="checkin-settings"><legend>打卡频率</legend><div className="weekday-grid">
+                  {weekdays.map((weekday) => <label key={weekday}><input name="proposalCheckInDays" type="checkbox" value={weekday} /><span>{weekday}</span></label>)}
+                </div></fieldset>
+                <label>截止时间<input name="proposalDeadline" type="date" required /></label>
+              </>
+            )}
+            <label>奖励类型
+              <select name="proposalRewardType" value={proposalRewardType} onChange={(event) => setProposalRewardType(event.target.value as WishType)}>
+                <option>物质奖励</option><option>旅游奖励</option><option>陪玩奖励</option><option>积分奖励</option><option>其他愿望</option>
+              </select>
             </label>
             <label>申报说明<textarea name="proposalDescription" placeholder="说明希望完成什么、为什么申报" rows={3} required /></label>
-            <label>建议积分<input name="suggestedPoints" type="number" min="0" step="10" defaultValue="50" /></label>
+            {proposalRewardType === "积分奖励"
+              ? <label>建议积分<input name="suggestedPoints" type="number" min="1" step="10" defaultValue="50" required /></label>
+              : <label>建议奖励说明<textarea name="proposalRewardDescription" placeholder="说明希望获得的奖励" rows={2} required /></label>}
             <div className="form-actions"><button className="primary-button" type="submit">提交父母审批</button></div>
+            {proposalFormMessage && <p className="form-message">{proposalFormMessage}</p>}
             {myProposals.length > 0 && <small>当前有 {myProposals.length} 个申报任务等待审批。</small>}
           </form>
 
@@ -1164,7 +1326,9 @@ export default function Home() {
                 {proposalTasks.map((task) => (
                   <article className="task-card" key={task.id}>
                     <div className="card-title-row"><h2>{task.title}</h2><span className="status status-待申领">待审批</span></div>
-                    <p>{memberById.get(task.proposerId ?? task.creatorId)?.name} · {task.type} · 建议 {task.suggestedPoints ?? 0} 积分</p>
+                    <p>{memberById.get(task.proposerId ?? task.creatorId)?.name} · {task.type} · {getRewardType(task)}</p>
+                    <p>{getRewardDescription(task)}</p>
+                    <small className="submitted-time">提交时间：{formatSubmittedAt(task.submittedAt)}</small>
                     <p className="detail-text">{task.proposalDescription}</p>
                     <div className="card-actions">
                       <button className="primary-button" onClick={() => approveTaskProposal(task.id)}>审批通过并公示</button>
@@ -1216,13 +1380,15 @@ export default function Home() {
             )}
             <label>
               奖励类型
-              <select name="rewardType" defaultValue={editingTask?.rewardType ?? "物质奖励"}>
+              <select name="rewardType" value={taskRewardType} onChange={(event) => setTaskRewardType(event.target.value as WishType)}>
                 <option>物质奖励</option>
                 <option>旅游奖励</option>
                 <option>陪玩奖励</option>
+                <option>积分奖励</option>
                 <option>其他愿望</option>
               </select>
             </label>
+            {taskRewardType === "积分奖励" && <label>积分数量<input name="taskRewardPoints" type="number" min="1" step="10" defaultValue={editingTask?.rewardPoints ?? 50} required /></label>}
             <label>
               奖励描述
               <textarea
@@ -1261,6 +1427,7 @@ export default function Home() {
                 </button>
               )}
             </div>
+            {taskFormMessage && <p className="form-message">{taskFormMessage}</p>}
           </form>
 
           <section>
@@ -1277,6 +1444,8 @@ export default function Home() {
                   </div>
                   <p>{task.type} · 奖励：{getRewardType(task)}</p>
                   <p className="detail-text">{getRewardDescription(task)}</p>
+                  {task.rewardType === "积分奖励" && <small>积分数量：{task.rewardPoints ?? 0}</small>}
+                  <small className="submitted-time">提交时间：{formatSubmittedAt(task.submittedAt)}</small>
                   <CheckInProgress task={task} />
                   {task.linkedWishId && <small>关联愿望：{wishById.get(task.linkedWishId)?.title}</small>}
                   <div className="card-actions">
@@ -1291,6 +1460,8 @@ export default function Home() {
                       onClick={() => {
                         setEditingTaskId(task.id);
                         setTaskFormType(task.type);
+                        setTaskRewardType(task.rewardType ?? "其他愿望");
+                        setTaskFormMessage("");
                       }}
                     >
                       编辑
