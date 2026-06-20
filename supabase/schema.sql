@@ -9,6 +9,7 @@ drop function if exists public.login_app_account(text, text);
 drop function if exists public.get_app_state(text);
 drop function if exists public.save_app_state(text, jsonb);
 drop function if exists public.update_app_account(text, text, text);
+drop function if exists public.update_app_account(text, text, text, text);
 drop function if exists public.account_from_token(text);
 drop function if exists public.ensure_account_family(uuid);
 drop function if exists public.create_app_session(uuid);
@@ -35,6 +36,7 @@ create table if not exists public.app_accounts (
   parent_title text,
   child_title text,
   gender text,
+  avatar_id text not null default 'father_01',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -45,7 +47,21 @@ add column if not exists member_id text,
 add column if not exists role text not null default 'parent',
 add column if not exists parent_title text,
 add column if not exists child_title text,
-add column if not exists gender text;
+add column if not exists gender text,
+add column if not exists avatar_id text not null default 'father_01';
+
+alter table public.app_accounts alter column avatar_id set default 'father_01';
+
+update public.app_accounts
+set avatar_id = case
+  when role = 'parent' and parent_title = '妈妈' then 'mother_01'
+  when role = 'child' and child_title = '哥哥' then 'older_brother_01'
+  when role = 'child' and child_title = '姐姐' then 'older_sister_01'
+  when role = 'child' and child_title = '妹妹' then 'younger_sister_01'
+  when role = 'child' then 'younger_brother_01'
+  else 'father_01'
+end
+where avatar_id is null or avatar_id in ('star', 'rocket', 'flower', 'sun');
 
 create table if not exists public.app_sessions (
   token_hash text primary key,
@@ -96,6 +112,7 @@ as $$
     'parent_title', p_account.parent_title,
     'child_title', p_account.child_title,
     'gender', p_account.gender,
+    'avatar_id', p_account.avatar_id,
     'created_at', p_account.created_at,
     'updated_at', p_account.updated_at
   );
@@ -247,7 +264,8 @@ begin
     family_id,
     member_id,
     role,
-    parent_title
+    parent_title,
+    avatar_id
   )
   values (
     normalized_username,
@@ -256,7 +274,8 @@ begin
     new_family.id,
     extensions.gen_random_uuid()::text,
     'parent',
-    normalized_parent_title
+    normalized_parent_title,
+    case when normalized_parent_title = '妈妈' then 'mother_01' else 'father_01' end
   )
   returning * into new_account;
 
@@ -268,6 +287,7 @@ begin
         'name', new_account.display_name,
         'role', 'parent',
         'title', normalized_parent_title,
+        'avatarId', new_account.avatar_id,
         'accountUsername', new_account.username
       )
     ),
@@ -382,7 +402,8 @@ $$;
 create or replace function public.update_app_account(
   p_token text,
   p_display_name text,
-  p_new_password text default null
+  p_new_password text default null,
+  p_avatar_id text default 'father_01'
 )
 returns jsonb
 language plpgsql
@@ -399,9 +420,16 @@ begin
     raise exception '新密码至少 8 位，并且必须包含字母和数字';
   end if;
 
+  if coalesce(p_avatar_id, 'father_01') not in (
+    'father_01', 'mother_01', 'older_brother_01', 'younger_brother_01', 'older_sister_01', 'younger_sister_01'
+  ) then
+    raise exception '头像编号无效';
+  end if;
+
   update public.app_accounts
   set
     display_name = coalesce(nullif(trim(p_display_name), ''), app_accounts.display_name),
+    avatar_id = coalesce(p_avatar_id, avatar_id),
     password_hash = case
       when nullif(trim(p_new_password), '') is null then password_hash
       else extensions.crypt(p_new_password, extensions.gen_salt('bf'))
@@ -488,7 +516,8 @@ begin
     role,
     parent_title,
     child_title,
-    gender
+    gender,
+    avatar_id
   )
   values (
     normalized_username,
@@ -499,7 +528,15 @@ begin
     normalized_role,
     case when normalized_role = 'parent' then normalized_parent_title else null end,
     case when normalized_role = 'child' then normalized_child_title else null end,
-    case when normalized_role = 'child' then normalized_gender else null end
+    case when normalized_role = 'child' then normalized_gender else null end,
+    case
+      when normalized_role = 'parent' and normalized_parent_title = '妈妈' then 'mother_01'
+      when normalized_role = 'parent' then 'father_01'
+      when normalized_child_title = '哥哥' then 'older_brother_01'
+      when normalized_child_title = '姐姐' then 'older_sister_01'
+      when normalized_child_title = '妹妹' then 'younger_sister_01'
+      else 'younger_brother_01'
+    end
   )
   returning * into member_account;
 
@@ -518,6 +555,7 @@ begin
         'title', member_account.parent_title,
         'gender', member_account.gender,
         'childTitle', member_account.child_title,
+        'avatarId', member_account.avatar_id,
         'accountUsername', member_account.username
       )
     )
@@ -661,7 +699,7 @@ revoke all on function public.register_app_account(text, text, text, text) from 
 revoke all on function public.login_app_account(text, text) from PUBLIC;
 revoke all on function public.get_app_state(text) from PUBLIC;
 revoke all on function public.save_app_state(text, jsonb) from PUBLIC;
-revoke all on function public.update_app_account(text, text, text) from PUBLIC;
+revoke all on function public.update_app_account(text, text, text, text) from PUBLIC;
 revoke all on function public.create_family_member_account(text, text, text, text, text, text, text, text) from PUBLIC;
 revoke all on function public.delete_family_member_account(text, text) from PUBLIC;
 revoke all on function public.create_child_account(text, text, text, text, text, text) from PUBLIC;
@@ -670,7 +708,7 @@ grant execute on function public.register_app_account(text, text, text, text) to
 grant execute on function public.login_app_account(text, text) to anon, authenticated;
 grant execute on function public.get_app_state(text) to anon, authenticated;
 grant execute on function public.save_app_state(text, jsonb) to anon, authenticated;
-grant execute on function public.update_app_account(text, text, text) to anon, authenticated;
+grant execute on function public.update_app_account(text, text, text, text) to anon, authenticated;
 grant execute on function public.create_family_member_account(text, text, text, text, text, text, text, text) to anon, authenticated;
 grant execute on function public.delete_family_member_account(text, text) to anon, authenticated;
 grant execute on function public.create_child_account(text, text, text, text, text, text) to anon, authenticated;

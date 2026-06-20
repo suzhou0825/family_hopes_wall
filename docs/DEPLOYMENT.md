@@ -8,6 +8,8 @@
 
 - Supabase 项目已创建。
 - 最新 `supabase/schema.sql` 已执行，包含 `app_families`、`app_accounts`、`app_sessions`、`app_family_data` 和登录 RPC。
+- `app_accounts` 已包含 `avatar_id` 字段，`update_app_account` 已更新为四参数版本。
+- `avatar_id` 允许值已更新为六类家人头像编号，部署前必须重新执行最新 SQL。
 - Supabase 中不再保留旧版本 `profiles`、`app_state`、`app_data` 表。
 - 本地 `.env.local` 已配置：
   - `NEXT_PUBLIC_SUPABASE_URL`
