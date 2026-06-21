@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { avatarOptions } from "../lib/avatar-config";
+import { type PetId, petOptions } from "../lib/pet-config";
 
 type Role = "parent" | "child";
 type ParentTitle = "爸爸" | "妈妈";
@@ -14,7 +15,7 @@ type TaskApprovalStatus = "待审批" | "已通过";
 type WishType = "物质奖励" | "旅游奖励" | "陪玩奖励" | "积分奖励" | "其他愿望";
 type TaskType = "打卡任务" | "一次性任务" | "承诺任务";
 type Weekday = "周一" | "周二" | "周三" | "周四" | "周五" | "周六" | "周日";
-type AppView = "home" | "wall" | "wishes" | "myTasks" | "tasks" | "family" | "account" | "points";
+type AppView = "home" | "wall" | "wishes" | "myTasks" | "tasks" | "family" | "account" | "points" | "pet";
 
 type CheckIn = {
   childId: string;
@@ -25,6 +26,57 @@ type StoredAppData = {
   members: Member[];
   wishes: Wish[];
   tasks: Task[];
+};
+
+type PetAdoption = {
+  id: string;
+  memberId: string;
+  petId: PetId;
+  status: "active" | "abandoned";
+  adoptedAt: string;
+  abandonedAt?: string;
+  growthValue: number;
+  mood: string;
+  hunger: number;
+  happiness: number;
+  cleanliness: number;
+  energy: number;
+  outfitId: string;
+  dailyThought: string;
+  thoughtDate: string;
+  updatedAt: string;
+};
+
+type PointAccount = {
+  memberId: string;
+  balance: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PointTransaction = {
+  id: string;
+  memberId: string;
+  amount: number;
+  balanceAfter: number;
+  category: string;
+  description: string;
+  createdAt: string;
+};
+
+type PetInteraction = {
+  id: string;
+  adoptionId: string;
+  action: "feed" | "play" | "dress";
+  detail?: string;
+  createdAt: string;
+};
+
+type EconomyData = {
+  pointAccounts: PointAccount[];
+  transactions: PointTransaction[];
+  petAdoptions: PetAdoption[];
+  petInteractions: PetInteraction[];
 };
 
 type AppAccount = {
@@ -88,10 +140,11 @@ type Task = {
   proposerId?: string;
   rewardPoints?: number;
   submittedAt?: string;
+  completionSubmittedAt?: string;
+  completedAt?: string;
 };
 
 const weekdays: Weekday[] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-const pointGoods = ["亲子电影夜", "周末野餐券", "星光小屋装扮", "虚拟宠物蛋"];
 const storageKey = "family-wish-wall-data-v1";
 const sessionStorageKey = "family-wish-wall-app-session-v1";
 
@@ -145,6 +198,31 @@ function formatSubmittedAt(value?: string) {
 
 function normalizedTitle(value: string) {
   return value.trim().toLocaleLowerCase("zh-CN");
+}
+
+const petThoughts = [
+  "今天也想和你一起完成一件小事。",
+  "被认真陪伴的每一天都值得收藏。",
+  "慢慢长大，也要记得为自己鼓掌。",
+  "今天的努力，会变成明天的小惊喜。",
+  "有你回来看看我，心里就暖暖的。",
+  "一起保持好奇，去发现新的快乐。"
+];
+
+function getPetDailyProfile(adoption: PetAdoption) {
+  const adoptedDate = new Date(adoption.adoptedAt);
+  const now = new Date();
+  const adoptedDay = Number.isNaN(adoptedDate.getTime()) ? now : adoptedDate;
+  const adoptedStart = new Date(adoptedDay.getFullYear(), adoptedDay.getMonth(), adoptedDay.getDate()).getTime();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const days = Math.max(1, Math.floor((todayStart - adoptedStart) / 86400000) + 1);
+  return {
+    adoptedDate: new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(adoptedDay),
+    days,
+    growth: adoption.growthValue || days * 10,
+    mood: adoption.mood,
+    thought: adoption.dailyThought || petThoughts[0]
+  };
 }
 
 function copiedDeadline(task: Task) {
@@ -262,6 +340,10 @@ export default function Home() {
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [wishes, setWishes] = useState<Wish[]>(initialWishes);
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
+  const [petAdoptions, setPetAdoptions] = useState<PetAdoption[]>([]);
+  const [pointAccounts, setPointAccounts] = useState<PointAccount[]>([]);
+  const [pointTransactions, setPointTransactions] = useState<PointTransaction[]>([]);
+  const [petInteractions, setPetInteractions] = useState<PetInteraction[]>([]);
   const [hasLoadedStoredData, setHasLoadedStoredData] = useState(false);
   const [account, setAccount] = useState<AppAccount | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
@@ -279,6 +361,7 @@ export default function Home() {
   const [showMemberConfirmPassword, setShowMemberConfirmPassword] = useState(false);
   const [currentUserId, setCurrentUserId] = useState("p1");
   const [activeView, setActiveView] = useState<AppView>("home");
+  const [activePetAdoptionId, setActivePetAdoptionId] = useState<string | null>(null);
   const [editingWishId, setEditingWishId] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
@@ -291,6 +374,8 @@ export default function Home() {
   const [wishFormMessage, setWishFormMessage] = useState("");
   const [taskFormMessage, setTaskFormMessage] = useState("");
   const [proposalFormMessage, setProposalFormMessage] = useState("");
+  const [petMessage, setPetMessage] = useState("");
+  const [economyMessage, setEconomyMessage] = useState("");
 
   const currentUser =
     members.find((member) => member.id === account?.member_id) ??
@@ -378,6 +463,24 @@ export default function Home() {
     }
   }
 
+  function applyEconomyData(data: Partial<EconomyData> | undefined) {
+    setPointAccounts(Array.isArray(data?.pointAccounts) ? data.pointAccounts : []);
+    setPointTransactions(Array.isArray(data?.transactions) ? data.transactions : []);
+    setPetAdoptions(Array.isArray(data?.petAdoptions) ? data.petAdoptions : []);
+    setPetInteractions(Array.isArray(data?.petInteractions) ? data.petInteractions : []);
+  }
+
+  async function loadEconomy(token = sessionToken) {
+    if (!supabase || !token) return;
+    const { data, error } = await supabase.rpc("get_family_economy", { p_token: token });
+    if (error) {
+      setEconomyMessage(`积分与宠物数据加载失败：${error.message}`);
+      return;
+    }
+    applyEconomyData(data as EconomyData);
+    setEconomyMessage("");
+  }
+
   function applyAuthPayload(payload: { token?: string; account?: AppAccount; data?: Partial<StoredAppData> }) {
     if (!payload.token || !payload.account) {
       setAuthMessage("登录返回数据不完整。");
@@ -387,6 +490,7 @@ export default function Home() {
     setAccount(payload.account);
     window.localStorage.setItem(sessionStorageKey, payload.token);
     applyStoredData(payload.data);
+    void loadEconomy(payload.token);
     setHasLoadedStoredData(true);
     setSaveStatus("已连接 Supabase");
   }
@@ -495,6 +599,7 @@ export default function Home() {
     window.localStorage.removeItem(sessionStorageKey);
     setSessionToken(null);
     setAccount(null);
+    applyEconomyData(undefined);
     setAuthMessage("已退出登录。");
   }
 
@@ -523,8 +628,8 @@ export default function Home() {
       setWishFormMessage("愿望名重复，请修改后再提交。");
       return;
     }
-    if (type === "积分奖励" && (!Number.isFinite(rewardPoints) || rewardPoints <= 0)) {
-      setWishFormMessage("积分奖励必须填写大于 0 的积分数量。");
+    if (type === "积分奖励" && (!Number.isFinite(rewardPoints) || rewardPoints <= 0 || rewardPoints > 100)) {
+      setWishFormMessage("积分奖励必须在 1 到 100 成长星之间。");
       return;
     }
 
@@ -593,6 +698,10 @@ export default function Home() {
       setTaskFormMessage("积分奖励必须填写大于 0 的积分数量。");
       return;
     }
+    if (rewardType !== "积分奖励" && (!Number.isFinite(rewardPoints) || rewardPoints < 0)) {
+      setTaskFormMessage("额外成长星不能小于 0。");
+      return;
+    }
 
     const nextLinkedWishId = linkedWishId || undefined;
     const newTask: Task = {
@@ -602,7 +711,7 @@ export default function Home() {
       creatorId: currentUser.id,
       rewardType,
       rewardDescription,
-      rewardPoints: rewardType === "积分奖励" ? rewardPoints : undefined,
+      rewardPoints: Number.isFinite(rewardPoints) && rewardPoints > 0 ? rewardPoints : undefined,
       createdAt: todayKey(),
       submittedAt: submittedNow(),
       linkedWishId: nextLinkedWishId,
@@ -622,7 +731,7 @@ export default function Home() {
                 reward: undefined,
                 rewardType,
                 rewardDescription,
-                rewardPoints: rewardType === "积分奖励" ? rewardPoints : undefined,
+                rewardPoints: Number.isFinite(rewardPoints) && rewardPoints > 0 ? rewardPoints : undefined,
                 linkedWishId: nextLinkedWishId,
                 checkInDays: type === "打卡任务" ? checkInDays : undefined,
                 deadline: type === "打卡任务" ? deadline : undefined,
@@ -657,8 +766,8 @@ export default function Home() {
       setProposalFormMessage("任务名重复，请修改后再提交。");
       return;
     }
-    if (rewardType === "积分奖励" && (!Number.isFinite(suggestedPoints) || suggestedPoints <= 0)) {
-      setProposalFormMessage("积分奖励必须填写大于 0 的建议积分。");
+    if (rewardType === "积分奖励" && (!Number.isFinite(suggestedPoints) || suggestedPoints <= 0 || suggestedPoints > 100)) {
+      setProposalFormMessage("积分奖励必须在 1 到 100 成长星之间。");
       return;
     }
     if (rewardType !== "积分奖励" && !proposedRewardDescription) {
@@ -717,6 +826,8 @@ export default function Home() {
       assigneeId: undefined,
       status: "待申领",
       submitted: false,
+      completionSubmittedAt: undefined,
+      completedAt: undefined,
       checkIns: source.type === "打卡任务" ? [] : undefined,
       approvalStatus: "已通过",
       proposalDescription: undefined,
@@ -798,6 +909,7 @@ export default function Home() {
       }
 
       applyStoredData((memberResult as { data: Partial<StoredAppData> }).data);
+      await loadEconomy();
       setAccountMessage(role === "parent" ? "父母账号已创建。" : "孩子账号已创建。");
       setMemberFormRole("child");
     }
@@ -811,8 +923,9 @@ export default function Home() {
     setTasks((current) =>
       current
         .filter((task) => task.creatorId !== memberId)
-        .map((task) => (task.assigneeId === memberId ? { ...task, assigneeId: undefined, status: "待申领", submitted: false } : task))
+        .map((task) => (task.assigneeId === memberId ? { ...task, assigneeId: undefined, status: "待申领", submitted: false, completionSubmittedAt: undefined, completedAt: undefined } : task))
     );
+    setPetAdoptions((current) => current.filter((adoption) => adoption.memberId !== memberId));
     if (editingMemberId === memberId) setEditingMemberId(null);
   }
 
@@ -835,6 +948,7 @@ export default function Home() {
     }
 
     applyStoredData((data as { data: Partial<StoredAppData> }).data);
+    await loadEconomy();
     if (editingMemberId === memberId) setEditingMemberId(null);
     setAccountMessage("家庭成员账号已删除。");
   }
@@ -852,7 +966,7 @@ export default function Home() {
     if (currentUser.role !== "child") return;
     setTasks((current) =>
       current.map((task) =>
-        task.id === taskId && task.assigneeId === currentUser.id ? { ...task, submitted: true } : task
+        task.id === taskId && task.assigneeId === currentUser.id ? { ...task, submitted: true, completionSubmittedAt: submittedNow() } : task
       )
     );
   }
@@ -868,18 +982,37 @@ export default function Home() {
           checkIns: [...(task.checkIns ?? []), { childId: currentUser.id, date: today }]
         };
         const { completed, required } = getCheckInProgress(nextTask);
-        return required > 0 && completed >= required ? { ...nextTask, submitted: true } : nextTask;
+        return required > 0 && completed >= required ? { ...nextTask, submitted: true, completionSubmittedAt: submittedNow() } : nextTask;
       })
     );
   }
 
-  function approveTask(taskId: string) {
+  async function approveTask(taskId: string) {
     if (currentUser.role !== "parent") return;
     const task = tasks.find((item) => item.id === taskId);
     if (!task) return;
 
+    if ((task.rewardPoints ?? 0) > 0) {
+      if (!supabase || !sessionToken || !task.assigneeId) {
+        setTaskFormMessage("积分奖励无法入账，请确认登录状态和孩子领取信息。");
+        return;
+      }
+      const { error } = await supabase.rpc("award_task_points", {
+        p_token: sessionToken,
+        p_member_id: task.assigneeId,
+        p_points: task.rewardPoints,
+        p_task_id: task.id,
+        p_description: `完成任务：${task.title}`
+      });
+      if (error) {
+        setTaskFormMessage(`积分发放失败：${error.message}`);
+        return;
+      }
+      await loadEconomy();
+    }
+
     setTasks((current) =>
-      current.map((item) => (item.id === taskId ? { ...item, status: "已完成", submitted: false } : item))
+      current.map((item) => (item.id === taskId ? { ...item, status: "已完成", submitted: false, completedAt: submittedNow() } : item))
     );
     if (task.linkedWishId) {
       setWishes((current) =>
@@ -895,6 +1028,85 @@ export default function Home() {
     );
   }
 
+  async function claimPet(petId: PetId) {
+    setPetMessage("");
+    if (currentUser.role !== "child") {
+      setPetMessage("父母账号不能领取电子宠物。");
+      return;
+    }
+    const myAdoptions = petAdoptions.filter((adoption) => adoption.memberId === currentUser.id);
+    if (myAdoptions.some((adoption) => adoption.petId === petId)) {
+      setPetMessage("这只宠物已经领取过了。");
+      return;
+    }
+    if (myAdoptions.length >= 2) {
+      setPetMessage("每个孩子最多领取 2 只电子宠物。");
+      return;
+    }
+    if (!supabase || !sessionToken) {
+      setPetMessage("宠物领养必须连接 Supabase 数据库。");
+      return;
+    }
+    const { data, error } = await supabase.rpc("adopt_app_pet", { p_token: sessionToken, p_pet_id: petId });
+    if (error) {
+      setPetMessage(`领养失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    const cost = Number((data as { cost?: number } | null)?.cost ?? 0);
+    setPetMessage(cost === 0 ? "第一只电子宠物已免费领养。" : `电子宠物领取成功，已扣除 ${cost} 成长星。`);
+  }
+
+  async function redeemPointItem(itemId: string) {
+    if (currentUser.role !== "child" || !supabase || !sessionToken) return;
+    setPetMessage("");
+    const { data, error } = await supabase.rpc("redeem_point_item", { p_token: sessionToken, p_item_id: itemId });
+    if (error) {
+      setPetMessage(`兑换失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    const result = data as { itemName?: string; cost?: number } | null;
+    setPetMessage(`已兑换${result?.itemName ?? "物品"}，扣除 ${result?.cost ?? 0} 成长星。`);
+  }
+
+  function openPet(adoptionId: string) {
+    setActivePetAdoptionId(adoptionId);
+    setActiveView("pet");
+  }
+
+  async function interactPet(action: PetInteraction["action"], detail?: string) {
+    if (currentUser.role !== "child" || !activePetAdoptionId || !supabase || !sessionToken) return;
+    setPetMessage("");
+    const { error } = await supabase.rpc("interact_app_pet", {
+      p_token: sessionToken,
+      p_adoption_id: activePetAdoptionId,
+      p_action: action,
+      p_detail: detail ?? null
+    });
+    if (error) {
+      setPetMessage(`互动失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    setPetMessage(action === "feed" ? "喂养完成，宠物吃得很满足。" : action === "play" ? "玩耍完成，宠物心情更好了。" : "新装扮已经保存。");
+  }
+
+  async function abandonPet() {
+    if (currentUser.role !== "child" || !activePetAdoptionId || !supabase || !sessionToken) return;
+    if (!window.confirm("弃养将扣除 2000 成长星，且无法撤销本次领养记录。确定继续吗？")) return;
+    setPetMessage("");
+    const { error } = await supabase.rpc("abandon_app_pet", { p_token: sessionToken, p_adoption_id: activePetAdoptionId });
+    if (error) {
+      setPetMessage(`弃养失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    setActivePetAdoptionId(null);
+    setActiveView("points");
+    setPetMessage("宠物已弃养，扣除 2000 成长星。");
+  }
+
   const visibleWishes = currentUser.role === "child" ? wishes.filter((wish) => wish.childId === currentUser.id) : wishes;
   const activeWishes = visibleWishes.filter((wish) => wish.status !== "已兑换");
   const archivedWishes = visibleWishes.filter((wish) => wish.status === "已兑换");
@@ -905,6 +1117,17 @@ export default function Home() {
   const myProposals = proposalTasks.filter((task) => task.proposerId === currentUser.id);
   const claimableTasks = tasks.filter((task) => task.status === "待申领" && task.approvalStatus !== "待审批");
   const myTasks = tasks.filter((task) => task.assigneeId === currentUser.id);
+  const childPointRows = children
+    .map((child) => ({ child, balance: pointAccounts.find((item) => item.memberId === child.id)?.balance ?? 0 }))
+    .sort((first, second) => second.balance - first.balance);
+  const currentChildPoints = currentUser.role === "child" ? pointAccounts.find((item) => item.memberId === currentUser.id) : null;
+  const currentPointTransactions = currentUser.role === "child" ? pointTransactions.filter((item) => item.memberId === currentUser.id) : [];
+  const currentMonthKey = new Date().toISOString().slice(0, 7);
+  const currentMonthTransactions = currentPointTransactions.filter((item) => item.createdAt.slice(0, 7) === currentMonthKey);
+  const currentMonthGain = currentMonthTransactions.filter((item) => item.amount > 0).reduce((total, item) => total + item.amount, 0);
+  const currentMonthCost = Math.abs(currentMonthTransactions.filter((item) => item.amount < 0).reduce((total, item) => total + item.amount, 0));
+  const myPetAdoptions = petAdoptions.filter((adoption) => adoption.memberId === currentUser.id);
+  const activePetAdoption = petAdoptions.find((adoption) => adoption.id === activePetAdoptionId) ?? null;
 
   if (isSessionLoading) {
     return (
@@ -950,7 +1173,7 @@ export default function Home() {
                   required
                 />
                 <button type="button" aria-label={showPassword ? "隐藏密码" : "显示密码"} onClick={() => setShowPassword((current) => !current)}>
-                  {showPassword ? "隐藏" : "显示"}
+                  <EyeIcon open={showPassword} />
                 </button>
               </span>
             </label>
@@ -978,13 +1201,12 @@ export default function Home() {
                       aria-label={showConfirmPassword ? "隐藏确认密码" : "显示确认密码"}
                       onClick={() => setShowConfirmPassword((current) => !current)}
                     >
-                      {showConfirmPassword ? "隐藏" : "显示"}
+                      <EyeIcon open={showConfirmPassword} />
                     </button>
                   </span>
                 </label>
               </>
             )}
-            <small>账号使用小写字母、数字或下划线；密码至少 8 位且包含字母和数字。</small>
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!isSupabaseConfigured || isAuthLoading}>
                 {authMode === "login" ? "登录" : "注册"}
@@ -1039,7 +1261,7 @@ export default function Home() {
             <div className="dashboard-live-preview">
               {activeWishes.length === 0 ? <p className="preview-empty">暂时没有未完成愿望</p> : (
                 <div className="preview-track">{[...activeWishes, ...activeWishes].slice(0, 8).map((wish, index) => (
-                  <div className="preview-item" key={`${wish.id}-${index}`}><span>✦</span><div><strong>{wish.title}</strong><small>{memberById.get(wish.childId)?.name} · {wish.status}</small></div></div>
+                  <div className="preview-item" key={`${wish.id}-${index}`}><span>✦</span><div><strong>{wish.title}</strong><small>{memberById.get(wish.childId)?.name} · {wish.status}</small><small className="preview-time">提交：{formatSubmittedAt(wish.submittedAt)}</small></div></div>
                 ))}</div>
               )}
             </div>
@@ -1055,7 +1277,7 @@ export default function Home() {
             <div className="dashboard-live-preview">
               {boardTasks.length === 0 ? <p className="preview-empty">暂时没有进行中的任务</p> : (
                 <div className="preview-track">{[...boardTasks, ...boardTasks].slice(0, 8).map((task, index) => (
-                  <div className="preview-item" key={`${task.id}-${index}`}><span>✓</span><div><strong>{task.title}</strong><small>{task.status} · {task.type}</small></div></div>
+                  <div className="preview-item" key={`${task.id}-${index}`}><span>✓</span><div><strong>{task.title}</strong><small>{task.status} · {task.type}</small><small className="preview-time">提交：{formatSubmittedAt(task.submittedAt)}</small></div></div>
                 ))}</div>
               )}
             </div>
@@ -1065,9 +1287,27 @@ export default function Home() {
 
           <article className="dashboard-card points-zone" role="link" tabIndex={0} onClick={() => setActiveView("points")} onKeyDown={(event) => event.target === event.currentTarget && event.key === "Enter" && setActiveView("points")}>
             <div className="dashboard-card-head"><strong>积分区</strong></div>
-            <div className="point-balance"><small>当前积分</small><strong>1,280</strong><span>成长星</span></div>
-            <div className="goods-marquee"><div>{[...pointGoods, ...pointGoods].map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}</div></div>
-            <div className="community-preview"><span>虚拟宠物</span><span>星光小屋</span><span>梦想店面</span></div>
+            {currentUser.role === "parent" ? (
+              <div className="parent-points-preview">
+                <p>孩子积分排行</p>
+                <div className="ranking-list">{childPointRows.map((row, index) => {
+                  const adoptedPets = petAdoptions.filter((adoption) => adoption.memberId === row.child.id);
+                  return <div className="ranking-row" key={row.child.id}>
+                    <b>{index + 1}</b>
+                    <div><strong>{row.child.name}</strong><small>{row.balance} 成长星</small></div>
+                    <small>{adoptedPets.length > 0 ? `${adoptedPets.length} 只宠物` : "未领养"}</small>
+                  </div>;
+                })}</div>
+                <HomePetShowcase adoptions={petAdoptions} memberById={memberById} onSelect={(adoption) => openPet(adoption.id)} />
+              </div>
+            ) : (
+              <div className="child-points-preview">
+                <button className="point-balance" type="button" onClick={(event) => { event.stopPropagation(); setActiveView("points"); }}><small>当前积分</small><strong>{currentChildPoints?.balance ?? 0}</strong><span>成长星 · 查看详情</span></button>
+                <div className="recent-point-change"><span>最近变化</span><b>{currentPointTransactions[0] ? `${currentPointTransactions[0].description} ${currentPointTransactions[0].amount > 0 ? "+" : ""}${currentPointTransactions[0].amount}` : "暂无记录"}</b></div>
+                <HomePetShowcase adoptions={myPetAdoptions} memberById={memberById} onSelect={(adoption) => openPet(adoption.id)} />
+              </div>
+            )}
+            {economyMessage && <small className="economy-warning">{economyMessage}</small>}
           </article>
         </section>
       )}
@@ -1119,7 +1359,7 @@ export default function Home() {
                   </div>
                   <p>{task.type} · 奖励：{getRewardType(task)}</p>
                   <p className="detail-text">{getRewardDescription(task)}</p>
-                  {task.rewardType === "积分奖励" && <small>积分数量：{task.rewardPoints ?? 0}</small>}
+                  {(task.rewardPoints ?? 0) > 0 && <small>成长星奖励：{task.rewardPoints}</small>}
                   <small className="submitted-time">提交时间：{formatSubmittedAt(task.submittedAt)}</small>
                   <CheckInProgress task={task} />
                   <small>
@@ -1172,7 +1412,7 @@ export default function Home() {
                 <option>其他愿望</option>
               </select>
             </label>
-            {wishFormType === "积分奖励" && <label>积分数量<input name="wishRewardPoints" type="number" min="1" step="10" defaultValue={editingWish?.rewardPoints ?? 50} required /></label>}
+            {wishFormType === "积分奖励" && <label>成长星数量<input name="wishRewardPoints" type="number" min="1" max="100" step="1" defaultValue={editingWish?.rewardPoints ?? 50} required /><small>孩子申请的积分奖励最高为 100 成长星。</small></label>}
             <label>
               希望谁兑现
               <select name="fulfiller" defaultValue={editingWish?.fulfiller ?? "爸爸"}>
@@ -1267,7 +1507,7 @@ export default function Home() {
             </label>
             <label>申报说明<textarea name="proposalDescription" placeholder="说明希望完成什么、为什么申报" rows={3} required /></label>
             {proposalRewardType === "积分奖励"
-              ? <label>建议积分<input name="suggestedPoints" type="number" min="1" step="10" defaultValue="50" required /></label>
+              ? <label>建议成长星<input name="suggestedPoints" type="number" min="1" max="100" step="1" defaultValue="50" required /><small>孩子申报任务最高申请 100 成长星。</small></label>
               : <label>建议奖励说明<textarea name="proposalRewardDescription" placeholder="说明希望获得的奖励" rows={2} required /></label>}
             <div className="form-actions"><button className="primary-button" type="submit">提交父母审批</button></div>
             {proposalFormMessage && <p className="form-message">{proposalFormMessage}</p>}
@@ -1388,7 +1628,7 @@ export default function Home() {
                 <option>其他愿望</option>
               </select>
             </label>
-            {taskRewardType === "积分奖励" && <label>积分数量<input name="taskRewardPoints" type="number" min="1" step="10" defaultValue={editingTask?.rewardPoints ?? 50} required /></label>}
+            <label key={taskRewardType}>{taskRewardType === "积分奖励" ? "成长星数量" : "额外成长星（可选）"}<input name="taskRewardPoints" type="number" min={taskRewardType === "积分奖励" ? "1" : "0"} step="1" defaultValue={editingTask?.rewardPoints ?? (taskRewardType === "积分奖励" ? 50 : 0)} required={taskRewardType === "积分奖励"} /><small>{taskRewardType === "积分奖励" ? "任务完成审核后发放成长星。" : "可与当前非积分奖励组合发放；填写 0 表示不额外奖励。"}</small></label>
             <label>
               奖励描述
               <textarea
@@ -1444,7 +1684,7 @@ export default function Home() {
                   </div>
                   <p>{task.type} · 奖励：{getRewardType(task)}</p>
                   <p className="detail-text">{getRewardDescription(task)}</p>
-                  {task.rewardType === "积分奖励" && <small>积分数量：{task.rewardPoints ?? 0}</small>}
+                  {(task.rewardPoints ?? 0) > 0 && <small>成长星奖励：{task.rewardPoints}</small>}
                   <small className="submitted-time">提交时间：{formatSubmittedAt(task.submittedAt)}</small>
                   <CheckInProgress task={task} />
                   {task.linkedWishId && <small>关联愿望：{wishById.get(task.linkedWishId)?.title}</small>}
@@ -1482,6 +1722,8 @@ export default function Home() {
                       <div className="card-title-row"><h2>{task.title}</h2><StatusBadge label={task.status} /></div>
                       <p>{task.type} · 奖励：{getRewardType(task)}</p>
                       <p className="detail-text">{getRewardDescription(task)}</p>
+                      <small className="submitted-time">任务提交时间：{formatSubmittedAt(task.submittedAt)}</small>
+                      <small className="submitted-time">完成时间：{formatSubmittedAt(task.completedAt)}</small>
                     </article>
                   ))}
                 </div>
@@ -1493,47 +1735,101 @@ export default function Home() {
 
       {activeView === "points" && (
         <section className="points-page workspace">
-          <section className="points-hero panel">
-            <div>
-              <p className="eyebrow">家庭成长积分</p>
-              <h2>1,280 成长星</h2>
-              <p>积分功能当前为静态原型，后续接入任务奖励、兑换扣减和家庭流水。</p>
-            </div>
-            <div className="points-summary">
-              <span><small>本月累计</small><strong>+420</strong></span>
-              <span><small>本月消耗</small><strong>-160</strong></span>
-              <span><small>连续成长</small><strong>12 天</strong></span>
-            </div>
-          </section>
+          {currentUser.role === "parent" ? (
+            <>
+              <section className="points-hero panel">
+                <div><p className="eyebrow">家庭成长积分</p><h2>孩子积分排行</h2><p>父母可以查看积分与宠物状态，但不能领取电子宠物。</p></div>
+                <div className="points-summary"><span><small>孩子人数</small><strong>{children.length}</strong></span><span><small>已领养宠物</small><strong>{petAdoptions.length}</strong></span></div>
+              </section>
+              <section>
+                <div className="section-heading"><p>孩子积分排行</p><strong>真实余额</strong></div>
+                <div className="family-point-ranking">{childPointRows.map((row, index) => <article key={row.child.id}><b>{index + 1}</b><div><h2>{row.child.name}</h2><small>{petAdoptions.filter((item) => item.memberId === row.child.id).length} 只宠物</small></div><strong>{row.balance} 成长星</strong></article>)}</div>
+              </section>
+              <section>
+                <div className="section-heading"><p>家庭宠物陈列</p><strong>自动滚动展示</strong></div>
+                <HomePetShowcase adoptions={petAdoptions} memberById={memberById} onSelect={(adoption) => openPet(adoption.id)} />
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="points-hero panel">
+                <div><p className="eyebrow">我的成长积分</p><h2>{currentChildPoints?.balance ?? 0} 成长星</h2><p>成长星账户、积分变化和兑换记录均保存到 Supabase 数据库。</p></div>
+                <div className="points-summary"><span><small>本月累计</small><strong>+{currentMonthGain}</strong></span><span><small>本月消耗</small><strong>-{currentMonthCost}</strong></span><span><small>我的宠物</small><strong>{myPetAdoptions.length}/2</strong></span></div>
+              </section>
+              <section>
+                <div className="section-heading"><p>积分累积</p><strong>成长星收入</strong></div>
+                <div className="point-ledger">{currentPointTransactions.filter((item) => item.amount > 0).length === 0 ? <p className="empty-state">暂时没有积分收入。</p> : currentPointTransactions.filter((item) => item.amount > 0).map((item) => <span key={item.id}><strong>{item.description}</strong><small>{formatSubmittedAt(item.createdAt)}</small><b>+{item.amount}</b></span>)}</div>
+              </section>
+              <section>
+                <div className="section-heading"><p>积分变化</p><strong>数据库流水</strong></div>
+                <div className="point-ledger">{currentPointTransactions.length === 0 ? <p className="empty-state">暂时没有积分流水。</p> : currentPointTransactions.map((item) => <span key={item.id}><strong>{item.description}</strong><small>{formatSubmittedAt(item.createdAt)} · 余额 {item.balanceAfter}</small><b className={item.amount < 0 ? "point-cost" : ""}>{item.amount > 0 ? "+" : ""}{item.amount}</b></span>)}</div>
+              </section>
+              <section className="redemption-section">
+                <div className="section-heading"><p>积分兑换</p><strong>宠物 + 实物 + 虚拟物品</strong></div>
+                <h3>宠物领养</h3>
+                <p className="redemption-rule">第一只免费，第二只需要 500 成长星；每个孩子最多领养 2 只。</p>
+                <div className="pet-library">{petOptions.map((pet) => {
+                  const adopted = myPetAdoptions.some((item) => item.petId === pet.id);
+                  const limitReached = myPetAdoptions.length >= 2;
+                  const cost = myPetAdoptions.length === 0 ? 0 : 500;
+                  return <article className="pet-option" key={pet.id}>
+                    <PetStatusCard petId={pet.id} adoption={myPetAdoptions.find((item) => item.petId === pet.id)} />
+                    <button className={adopted ? "secondary-button" : "primary-button"} type="button" disabled={adopted || limitReached || (currentChildPoints?.balance ?? 0) < cost} onClick={() => claimPet(pet.id)}>{adopted ? "已领取" : limitReached ? "已达上限" : cost === 0 ? "免费领养" : `使用 ${cost} 成长星领养`}</button>
+                  </article>;
+                })}</div>
+                <h3>实物兑换</h3>
+                <div className="reward-grid"><RedeemCard icon="🎬" type="实物权益" title="亲子电影夜" cost={600} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("family_movie")} /><RedeemCard icon="🧺" type="实物权益" title="周末野餐券" cost={800} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("weekend_picnic")} /></div>
+                <h3>虚拟兑换</h3>
+                <div className="reward-grid"><RedeemCard icon="🪟" type="虚拟装扮" title="星光窗帘" cost={80} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("star_curtain")} /><RedeemCard icon="🎁" type="虚拟道具" title="宠物互动玩具" cost={200} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("pet_toy")} /></div>
+                {petMessage && <p className="auth-message">{petMessage}</p>}
+              </section>
+            </>
+          )}
+          {economyMessage && <p className="auth-message">{economyMessage}</p>}
+        </section>
+      )}
 
-          <section>
-            <div className="section-heading"><p>积分累计与消耗</p><strong>演示记录</strong></div>
-            <div className="point-ledger">
-              <span><strong>完成阅读打卡</strong><small>今天 19:20</small><b>+50</b></span>
-              <span><strong>兑换星光窗帘</strong><small>昨天 20:05</small><b className="point-cost">-80</b></span>
-              <span><strong>整理书桌审核通过</strong><small>6 月 18 日</small><b>+100</b></span>
-            </div>
-          </section>
+      {activeView === "pet" && (
+        <section className="pet-page workspace">
+          {!activePetAdoption ? <p className="empty-state">没有找到这只电子宠物，它可能已经被弃养。</p> : (() => {
+            const pet = petOptions.find((item) => item.id === activePetAdoption.petId);
+            if (!pet) return <p className="empty-state">宠物配置不存在。</p>;
+            const owner = memberById.get(activePetAdoption.memberId);
+            const profile = getPetDailyProfile(activePetAdoption);
+            const recentInteractions = petInteractions.filter((item) => item.adoptionId === activePetAdoption.id).slice(0, 6);
+            return <>
+              <section className="pet-room panel">
+                <div className="pet-room-status">
+                  <div><small>宠物伙伴</small><h2>{pet.name}</h2><p>{owner?.name ?? "孩子"} · 已领养 {profile.days} 天 · 成长值 {profile.growth}</p></div>
+                  <div className="pet-stat-chips"><span>心情 {activePetAdoption.mood}</span><span>饱食 {activePetAdoption.hunger}</span><span>快乐 {activePetAdoption.happiness}</span><span>精力 {activePetAdoption.energy}</span></div>
+                </div>
+                <div className="pet-room-stage">
+                  <div className={`pet-outfit-overlay outfit-${activePetAdoption.outfitId}`} aria-hidden="true" />
+                  <AnimatedPetImage petId={pet.id} />
+                  <blockquote>{activePetAdoption.dailyThought}</blockquote>
+                </div>
+              </section>
 
-          <section>
-            <div className="section-heading"><p>积分兑换区</p><strong>实物 + 虚拟物品</strong></div>
-            <div className="reward-grid">
-              <article><span>🎬</span><small>实物权益</small><h2>亲子电影夜</h2><strong>600 积分</strong></article>
-              <article><span>🧺</span><small>实物权益</small><h2>周末野餐券</h2><strong>800 积分</strong></article>
-              <article><span>🪟</span><small>虚拟装扮</small><h2>星光窗帘</h2><strong>80 积分</strong></article>
-              <article><span>🥚</span><small>虚拟宠物</small><h2>神秘宠物蛋</h2><strong>200 积分</strong></article>
-            </div>
-          </section>
+              {currentUser.role === "child" && <section className="pet-actions-panel">
+                <div className="section-heading"><p>陪伴互动</p><strong>每次互动都会保存</strong></div>
+                <div className="pet-action-menu">
+                  <button type="button" onClick={() => interactPet("feed")}><span>🥣</span><strong>喂养</strong><small>增加饱食和精力</small></button>
+                  <button type="button" onClick={() => interactPet("play")}><span>🧶</span><strong>玩耍</strong><small>增加快乐，消耗精力</small></button>
+                </div>
+                <div className="section-heading"><p>宠物装扮</p><strong>选择后自动保存</strong></div>
+                <div className="outfit-picker">
+                  {[{ id: "classic", label: "经典原装" }, { id: "star_hat", label: "星星帽" }, { id: "bow", label: "梦幻蝴蝶结" }, { id: "hoodie", label: "紫色连帽衫" }].map((outfit) => <button className={activePetAdoption.outfitId === outfit.id ? "selected" : ""} type="button" key={outfit.id} onClick={() => interactPet("dress", outfit.id)}>{outfit.label}</button>)}
+                </div>
+                <div className="pet-danger-zone"><div><strong>弃养宠物</strong><small>弃养会扣除 2000 成长星，请谨慎操作。</small></div><button className="danger-button" type="button" onClick={abandonPet}>扣除 2000 成长星并弃养</button></div>
+              </section>}
 
-          <section>
-            <div className="section-heading"><p>虚拟社区</p><strong>静态预览</strong></div>
-            <div className="virtual-community">
-              <article><span>🐣</span><h2>虚拟宠物</h2><p>陪伴宠物成长，解锁互动动作和成长纪念。</p></article>
-              <article><span>👕</span><h2>虚拟装扮</h2><p>收集家庭角色服装、配饰和节日限定造型。</p></article>
-              <article><span>🏠</span><h2>虚拟装修</h2><p>布置家庭小屋、房间、庭院和愿望展示墙。</p></article>
-              <article><span>🏪</span><h2>梦想店面</h2><p>规划虚拟店面陈列，后续扩展社区互动玩法。</p></article>
-            </div>
-          </section>
+              <section>
+                <div className="section-heading"><p>最近互动</p><strong>{recentInteractions.length} 条</strong></div>
+                <div className="pet-interaction-list">{recentInteractions.length === 0 ? <p className="empty-state">还没有互动记录。</p> : recentInteractions.map((item) => <span key={item.id}><strong>{item.action === "feed" ? "完成喂养" : item.action === "play" ? "一起玩耍" : "更换装扮"}</strong><small>{item.detail || "日常陪伴"} · {formatSubmittedAt(item.createdAt)}</small></span>)}</div>
+              </section>
+              {petMessage && <p className="auth-message">{petMessage}</p>}
+            </>;
+          })()}
         </section>
       )}
 
@@ -1557,13 +1853,13 @@ export default function Home() {
             <label>修改密码
               <span className="password-field">
                 <input name="newPassword" type={showNewPassword ? "text" : "password"} placeholder="新密码，可不填" />
-                <button type="button" onClick={() => setShowNewPassword((current) => !current)}>{showNewPassword ? "隐藏" : "显示"}</button>
+                <button type="button" aria-label={showNewPassword ? "隐藏新密码" : "显示新密码"} onClick={() => setShowNewPassword((current) => !current)}><EyeIcon open={showNewPassword} /></button>
               </span>
             </label>
             <label>确认新密码
               <span className="password-field">
                 <input name="newPasswordConfirm" type={showNewPasswordConfirm ? "text" : "password"} placeholder="再次输入新密码" />
-                <button type="button" onClick={() => setShowNewPasswordConfirm((current) => !current)}>{showNewPasswordConfirm ? "隐藏" : "显示"}</button>
+                <button type="button" aria-label={showNewPasswordConfirm ? "隐藏确认密码" : "显示确认密码"} onClick={() => setShowNewPasswordConfirm((current) => !current)}><EyeIcon open={showNewPasswordConfirm} /></button>
               </span>
             </label>
             <small>密码至少 8 位，并且必须包含字母和数字。</small>
@@ -1609,7 +1905,7 @@ export default function Home() {
                       required
                     />
                     <button type="button" aria-label={showMemberPassword ? "隐藏初始密码" : "显示初始密码"} onClick={() => setShowMemberPassword((current) => !current)}>
-                      {showMemberPassword ? "隐藏" : "显示"}
+                      <EyeIcon open={showMemberPassword} />
                     </button>
                   </span>
                 </label>
@@ -1627,7 +1923,7 @@ export default function Home() {
                       aria-label={showMemberConfirmPassword ? "隐藏确认初始密码" : "显示确认初始密码"}
                       onClick={() => setShowMemberConfirmPassword((current) => !current)}
                     >
-                      {showMemberConfirmPassword ? "隐藏" : "显示"}
+                      <EyeIcon open={showMemberConfirmPassword} />
                     </button>
                   </span>
                 </label>
@@ -1726,6 +2022,119 @@ function StatusBadge({ label }: { label: WishStatus | TaskStatus }) {
   return <span className={`status status-${label}`}>{label}</span>;
 }
 
+function EyeIcon({ open }: { open: boolean }) {
+  return (
+    <svg className="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.6" />
+      {!open && <path className="eye-slash" d="m4 4 16 16" />}
+    </svg>
+  );
+}
+
+function RedeemCard({ icon, type, title, cost, balance, onRedeem }: { icon: string; type: string; title: string; cost: number; balance: number; onRedeem: () => void }) {
+  return (
+    <article>
+      <span>{icon}</span><small>{type}</small><h2>{title}</h2><strong>{cost} 成长星</strong>
+      <button className="primary-button" type="button" disabled={balance < cost} onClick={onRedeem}>{balance < cost ? "余额不足" : "立即兑换"}</button>
+    </article>
+  );
+}
+
+function AnimatedPetImage({ petId, className = "" }: { petId: PetId; className?: string }) {
+  const pet = petOptions.find((item) => item.id === petId);
+  const [isActing, setIsActing] = useState(false);
+
+  useEffect(() => {
+    if (!pet) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const preload = new window.Image();
+    preload.src = pet.actionImage;
+    let resetTimer: number | undefined;
+    let actionTimer: number | undefined;
+    const scheduleAction = () => {
+      actionTimer = window.setTimeout(() => {
+        setIsActing(true);
+        resetTimer = window.setTimeout(() => {
+          setIsActing(false);
+          scheduleAction();
+        }, 1200);
+      }, 4500 + Math.round(Math.random() * 6500));
+    };
+    scheduleAction();
+    return () => {
+      if (actionTimer) window.clearTimeout(actionTimer);
+      if (resetTimer) window.clearTimeout(resetTimer);
+    };
+  }, [pet]);
+
+  if (!pet) return null;
+  return <img className={`${className}${isActing ? " is-acting" : ""}`} src={isActing ? pet.actionImage : pet.image} alt={`${pet.name}${isActing ? `正在${pet.actionLabel}` : ""}`} />;
+}
+
+function HomePetShowcase({
+  adoptions,
+  memberById,
+  onSelect
+}: {
+  adoptions: PetAdoption[];
+  memberById: Map<string, Member>;
+  onSelect: (adoption: PetAdoption) => void;
+}) {
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  useEffect(() => {
+    setCurrentIndex(0);
+    if (adoptions.length <= 1) return;
+    const timer = window.setInterval(() => setCurrentIndex((current) => (current + 1) % adoptions.length), 7000);
+    return () => window.clearInterval(timer);
+  }, [adoptions.length]);
+
+  if (adoptions.length === 0) {
+    return <div className="home-pet-showcase home-pet-empty"><span>✦</span><strong>等待你的第一位宠物伙伴</strong><small>点击进入积分区，从 2 只狗狗和 2 只猫咪中领取。</small></div>;
+  }
+
+  const adoption = adoptions[Math.min(currentIndex, adoptions.length - 1)];
+  const pet = petOptions.find((item) => item.id === adoption.petId);
+  if (!pet) return null;
+  const profile = getPetDailyProfile(adoption);
+  const owner = memberById.get(adoption.memberId);
+
+  return (
+    <div className="home-pet-showcase">
+      <button className="home-pet-display" type="button" onClick={(event) => { event.stopPropagation(); onSelect(adoption); }}>
+        <div className="home-pet-figure"><span>{owner ? `${owner.name}的伙伴` : "今日陪伴"}</span><AnimatedPetImage petId={pet.id} /></div>
+        <div className="home-pet-details">
+          <small>{pet.species} · 已领养 {profile.days} 天</small>
+          <h3>{pet.name}</h3>
+          <dl><div><dt>成长值</dt><dd>{profile.growth}</dd></div><div><dt>心情</dt><dd>{profile.mood}</dd></div></dl>
+          <blockquote>{profile.thought}</blockquote>
+          <em>点击进入互动页</em>
+        </div>
+      </button>
+      {adoptions.length > 1 && <div className="pet-carousel-status">{currentIndex + 1} / {adoptions.length}</div>}
+    </div>
+  );
+}
+
+function PetStatusCard({ petId, adoption, compact = false }: { petId: PetId; adoption?: PetAdoption; compact?: boolean }) {
+  const pet = petOptions.find((item) => item.id === petId);
+  if (!pet) return null;
+  const profile = adoption ? getPetDailyProfile(adoption) : null;
+
+  return (
+    <div className={`pet-status-card${compact ? " pet-status-compact" : ""}`}>
+      <div className="pet-image"><AnimatedPetImage petId={pet.id} /></div>
+      <div className="pet-copy">
+        <small>{pet.species} · {pet.personality}</small>
+        <h3>{pet.name}</h3>
+        <div className="pet-vitals"><span>心情 {profile?.mood ?? pet.mood}</span><span>{profile ? `成长值 ${profile.growth}` : `活力 ${pet.energy}%`}</span></div>
+        {profile && <small className="pet-adopted-time">领养于 {profile.adoptedDate} · 第 {profile.days} 天</small>}
+      </div>
+    </div>
+  );
+}
+
 function ProgressRail({ status }: { status: WishStatus }) {
   const steps: WishStatus[] = ["待申领", "兑换中", "兑现中", "已兑换"];
   const current = steps.indexOf(status);
@@ -1774,6 +2183,11 @@ function TaskProgressRow({
         <strong>{task.title}</strong>
         <span>{task.type} · {getRewardType(task)}</span>
         <p className="detail-text">{getRewardDescription(task)}</p>
+        <div className="task-time-list">
+          <small>任务提交时间：{formatSubmittedAt(task.submittedAt)}</small>
+          {task.completionSubmittedAt && <small>完成提交时间：{formatSubmittedAt(task.completionSubmittedAt)}</small>}
+          {task.status === "已完成" && <small>完成时间：{formatSubmittedAt(task.completedAt)}</small>}
+        </div>
         <CheckInProgress task={task} />
       </div>
       <StatusBadge label={task.status} />

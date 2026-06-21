@@ -15,6 +15,14 @@ drop function if exists public.ensure_account_family(uuid);
 drop function if exists public.create_app_session(uuid);
 drop function if exists public.validate_app_username(text);
 drop function if exists public.validate_app_password(text);
+drop function if exists public.ensure_child_point_account(uuid, text);
+drop function if exists public.refresh_family_pet_daily(uuid);
+drop function if exists public.get_family_economy(text);
+drop function if exists public.award_task_points(text, text, integer, text, text);
+drop function if exists public.redeem_point_item(text, text);
+drop function if exists public.adopt_app_pet(text, text);
+drop function if exists public.abandon_app_pet(text, uuid);
+drop function if exists public.interact_app_pet(text, uuid, text, text);
 
 drop table if exists public.app_data cascade;
 drop table if exists public.app_state cascade;
@@ -76,10 +84,84 @@ create table if not exists public.app_family_data (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.app_point_accounts (
+  family_id uuid not null references public.app_families(id) on delete cascade,
+  member_id text not null,
+  balance integer not null default 100 check (balance >= 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (family_id, member_id)
+);
+
+create table if not exists public.app_point_transactions (
+  id uuid primary key default extensions.gen_random_uuid(),
+  family_id uuid not null references public.app_families(id) on delete cascade,
+  member_id text not null,
+  amount integer not null check (amount <> 0),
+  balance_after integer not null check (balance_after >= 0),
+  category text not null,
+  description text not null,
+  source_type text,
+  source_id text,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists app_point_transactions_source_unique
+on public.app_point_transactions (family_id, member_id, source_type, source_id)
+where source_type is not null and source_id is not null;
+
+create table if not exists public.app_pet_adoptions (
+  id uuid primary key default extensions.gen_random_uuid(),
+  family_id uuid not null references public.app_families(id) on delete cascade,
+  member_id text not null,
+  pet_id text not null check (pet_id in ('corgi_star', 'poodle_cloud', 'ragdoll_moon', 'orange_star')),
+  status text not null default 'active' check (status in ('active', 'abandoned')),
+  adopted_at timestamptz not null default now(),
+  abandoned_at timestamptz,
+  growth_value integer not null default 10 check (growth_value >= 0),
+  mood text not null default '开心',
+  hunger integer not null default 80 check (hunger between 0 and 100),
+  happiness integer not null default 80 check (happiness between 0 and 100),
+  cleanliness integer not null default 80 check (cleanliness between 0 and 100),
+  energy integer not null default 80 check (energy between 0 and 100),
+  outfit_id text not null default 'classic',
+  daily_thought text not null default '今天也想和你一起完成一件小事。',
+  thought_date date not null default current_date,
+  updated_at timestamptz not null default now(),
+  unique (family_id, member_id, pet_id)
+);
+
+create table if not exists public.app_pet_interactions (
+  id uuid primary key default extensions.gen_random_uuid(),
+  adoption_id uuid not null references public.app_pet_adoptions(id) on delete cascade,
+  action text not null check (action in ('feed', 'play', 'dress')),
+  detail text,
+  created_at timestamptz not null default now()
+);
+
 alter table public.app_families enable row level security;
 alter table public.app_accounts enable row level security;
 alter table public.app_sessions enable row level security;
 alter table public.app_family_data enable row level security;
+alter table public.app_point_accounts enable row level security;
+alter table public.app_point_transactions enable row level security;
+alter table public.app_pet_adoptions enable row level security;
+alter table public.app_pet_interactions enable row level security;
+
+with inserted_accounts as (
+  insert into public.app_point_accounts (family_id, member_id, balance)
+  select family_id, member_id, 100
+  from public.app_accounts
+  where role = 'child' and family_id is not null and member_id is not null
+  on conflict (family_id, member_id) do nothing
+  returning family_id, member_id, balance
+)
+insert into public.app_point_transactions (
+  family_id, member_id, amount, balance_after, category, description, source_type, source_id
+)
+select family_id, member_id, 100, balance, 'system_grant', '系统授予初始成长星', 'initial_grant', member_id
+from inserted_accounts
+on conflict do nothing;
 
 create or replace function public.validate_app_password(p_password text)
 returns boolean
@@ -217,6 +299,516 @@ begin
   end if;
 
   return target_account_id;
+end;
+$$;
+
+create or replace function public.ensure_child_point_account(p_family_id uuid, p_member_id text)
+returns public.app_point_accounts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  point_account public.app_point_accounts;
+  was_created boolean := false;
+begin
+  insert into public.app_point_accounts (family_id, member_id, balance)
+  values (p_family_id, p_member_id, 100)
+  on conflict (family_id, member_id) do nothing
+  returning * into point_account;
+
+  was_created := point_account.member_id is not null;
+
+  if not was_created then
+    select * into point_account
+    from public.app_point_accounts
+    where family_id = p_family_id and member_id = p_member_id;
+  else
+    insert into public.app_point_transactions (
+      family_id, member_id, amount, balance_after, category, description, source_type, source_id
+    ) values (
+      p_family_id, p_member_id, 100, 100, 'system_grant', '系统授予初始成长星', 'initial_grant', p_member_id
+    ) on conflict do nothing;
+  end if;
+
+  return point_account;
+end;
+$$;
+
+create or replace function public.refresh_family_pet_daily(p_family_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  moods text[] := array['开心', '期待', '安心', '好奇', '元气满满'];
+  thoughts text[] := array[
+    '今天也想和你一起完成一件小事。',
+    '被认真陪伴的每一天都值得收藏。',
+    '慢慢长大，也要记得为自己鼓掌。',
+    '今天的努力，会变成明天的小惊喜。',
+    '有你回来看看我，心里就暖暖的。',
+    '一起保持好奇，去发现新的快乐。'
+  ];
+begin
+  update public.app_pet_adoptions
+  set
+    growth_value = greatest(10, (current_date - adopted_at::date + 1) * 10),
+    mood = moods[1 + mod(ascii(substr(md5(pet_id || current_date::text), 1, 1)), array_length(moods, 1))],
+    daily_thought = thoughts[1 + mod(ascii(substr(md5(current_date::text || pet_id), 1, 1)), array_length(thoughts, 1))],
+    thought_date = current_date,
+    updated_at = case when thought_date <> current_date then now() else updated_at end
+  where family_id = p_family_id and status = 'active';
+end;
+$$;
+
+create or replace function public.get_family_economy(p_token text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_account public.app_accounts;
+  account_items jsonb;
+  transaction_items jsonb;
+  adoption_items jsonb;
+  interaction_items jsonb;
+begin
+  select * into target_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  insert into public.app_point_accounts (family_id, member_id, balance)
+  select target_account.family_id, account.member_id, 100
+  from public.app_accounts account
+  where account.family_id = target_account.family_id
+    and account.role = 'child'
+    and account.member_id is not null
+  on conflict (family_id, member_id) do nothing;
+
+  insert into public.app_point_transactions (
+    family_id, member_id, amount, balance_after, category, description, source_type, source_id
+  )
+  select point_account.family_id, point_account.member_id, 100, 100, 'system_grant', '系统授予初始成长星', 'initial_grant', point_account.member_id
+  from public.app_point_accounts point_account
+  where point_account.family_id = target_account.family_id
+    and not exists (
+      select 1 from public.app_point_transactions transaction_item
+      where transaction_item.family_id = point_account.family_id
+        and transaction_item.member_id = point_account.member_id
+        and transaction_item.source_type = 'initial_grant'
+        and transaction_item.source_id = point_account.member_id
+    )
+  on conflict do nothing;
+
+  perform public.refresh_family_pet_daily(target_account.family_id);
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'memberId', member_id,
+    'balance', balance,
+    'createdAt', created_at,
+    'updatedAt', updated_at
+  ) order by balance desc), '[]'::jsonb) into account_items
+  from public.app_point_accounts
+  where family_id = target_account.family_id
+    and (target_account.role = 'parent' or member_id = target_account.member_id);
+
+  select coalesce(jsonb_agg(item order by item->>'createdAt' desc), '[]'::jsonb) into transaction_items
+  from (
+    select jsonb_build_object(
+      'id', id,
+      'memberId', member_id,
+      'amount', amount,
+      'balanceAfter', balance_after,
+      'category', category,
+      'description', description,
+      'createdAt', created_at
+    ) as item
+    from public.app_point_transactions
+    where family_id = target_account.family_id
+      and (target_account.role = 'parent' or member_id = target_account.member_id)
+    order by created_at desc
+    limit 100
+  ) transactions;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', id,
+    'memberId', member_id,
+    'petId', pet_id,
+    'status', status,
+    'adoptedAt', adopted_at,
+    'abandonedAt', abandoned_at,
+    'growthValue', growth_value,
+    'mood', mood,
+    'hunger', hunger,
+    'happiness', happiness,
+    'cleanliness', cleanliness,
+    'energy', energy,
+    'outfitId', outfit_id,
+    'dailyThought', daily_thought,
+    'thoughtDate', thought_date,
+    'updatedAt', updated_at
+  ) order by adopted_at), '[]'::jsonb) into adoption_items
+  from public.app_pet_adoptions
+  where family_id = target_account.family_id
+    and status = 'active'
+    and (target_account.role = 'parent' or member_id = target_account.member_id);
+
+  select coalesce(jsonb_agg(item order by item->>'createdAt' desc), '[]'::jsonb) into interaction_items
+  from (
+    select jsonb_build_object(
+      'id', interaction.id,
+      'adoptionId', interaction.adoption_id,
+      'action', interaction.action,
+      'detail', interaction.detail,
+      'createdAt', interaction.created_at
+    ) as item
+    from public.app_pet_interactions interaction
+    join public.app_pet_adoptions adoption on adoption.id = interaction.adoption_id
+    where adoption.family_id = target_account.family_id
+      and (target_account.role = 'parent' or adoption.member_id = target_account.member_id)
+    order by interaction.created_at desc
+    limit 100
+  ) interactions;
+
+  return jsonb_build_object(
+    'pointAccounts', account_items,
+    'transactions', transaction_items,
+    'petAdoptions', adoption_items,
+    'petInteractions', interaction_items
+  );
+end;
+$$;
+
+create or replace function public.award_task_points(
+  p_token text,
+  p_member_id text,
+  p_points integer,
+  p_task_id text,
+  p_description text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  parent_account public.app_accounts;
+  point_account public.app_point_accounts;
+begin
+  select * into parent_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if parent_account.role <> 'parent' then
+    raise exception '只有父母账号可以发放任务积分';
+  end if;
+
+  if p_points is null or p_points <= 0 then
+    raise exception '积分奖励必须大于 0';
+  end if;
+
+  if not exists (
+    select 1 from public.app_accounts
+    where family_id = parent_account.family_id and member_id = p_member_id and role = 'child'
+  ) then
+    raise exception '孩子账号不存在';
+  end if;
+
+  if exists (
+    select 1 from public.app_point_transactions
+    where family_id = parent_account.family_id
+      and member_id = p_member_id
+      and source_type = 'task_reward'
+      and source_id = p_task_id
+  ) then
+    return jsonb_build_object('ok', true, 'duplicate', true);
+  end if;
+
+  point_account := public.ensure_child_point_account(parent_account.family_id, p_member_id);
+
+  update public.app_point_accounts
+  set balance = balance + p_points, updated_at = now()
+  where family_id = parent_account.family_id and member_id = p_member_id
+  returning * into point_account;
+
+  insert into public.app_point_transactions (
+    family_id, member_id, amount, balance_after, category, description, source_type, source_id
+  ) values (
+    parent_account.family_id,
+    p_member_id,
+    p_points,
+    point_account.balance,
+    'task_reward',
+    coalesce(nullif(trim(p_description), ''), '完成任务获得成长星'),
+    'task_reward',
+    p_task_id
+  );
+
+  return jsonb_build_object('ok', true, 'balance', point_account.balance);
+end;
+$$;
+
+create or replace function public.redeem_point_item(p_token text, p_item_id text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  child_account public.app_accounts;
+  point_account public.app_point_accounts;
+  item_cost integer;
+  item_name text;
+  transaction_id uuid := extensions.gen_random_uuid();
+begin
+  select * into child_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if child_account.role <> 'child' then
+    raise exception '只有孩子账号可以兑换积分物品';
+  end if;
+
+  item_cost := case p_item_id
+    when 'family_movie' then 600
+    when 'weekend_picnic' then 800
+    when 'star_curtain' then 80
+    when 'pet_toy' then 200
+    else null
+  end;
+  item_name := case p_item_id
+    when 'family_movie' then '亲子电影夜'
+    when 'weekend_picnic' then '周末野餐券'
+    when 'star_curtain' then '星光窗帘'
+    when 'pet_toy' then '宠物互动玩具'
+    else null
+  end;
+
+  if item_cost is null then
+    raise exception '兑换物品编号无效';
+  end if;
+
+  point_account := public.ensure_child_point_account(child_account.family_id, child_account.member_id);
+  if point_account.balance < item_cost then
+    raise exception '成长星余额不足';
+  end if;
+
+  update public.app_point_accounts
+  set balance = balance - item_cost, updated_at = now()
+  where family_id = child_account.family_id and member_id = child_account.member_id
+  returning * into point_account;
+
+  insert into public.app_point_transactions (
+    id, family_id, member_id, amount, balance_after, category, description, source_type, source_id
+  ) values (
+    transaction_id, child_account.family_id, child_account.member_id, -item_cost, point_account.balance,
+    'redemption', '兑换' || item_name, 'redemption', transaction_id::text
+  );
+
+  return jsonb_build_object('ok', true, 'balance', point_account.balance, 'cost', item_cost, 'itemName', item_name);
+end;
+$$;
+
+create or replace function public.adopt_app_pet(p_token text, p_pet_id text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  child_account public.app_accounts;
+  point_account public.app_point_accounts;
+  adoption_count integer;
+  adoption_cost integer;
+  adoption public.app_pet_adoptions;
+begin
+  select * into child_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if child_account.role <> 'child' then
+    raise exception '只有孩子账号可以领养电子宠物';
+  end if;
+
+  if p_pet_id not in ('corgi_star', 'poodle_cloud', 'ragdoll_moon', 'orange_star') then
+    raise exception '宠物编号无效';
+  end if;
+
+  select count(*) into adoption_count
+  from public.app_pet_adoptions
+  where family_id = child_account.family_id and member_id = child_account.member_id and status = 'active';
+
+  if adoption_count >= 2 then
+    raise exception '每个孩子最多领养 2 只电子宠物';
+  end if;
+
+  if exists (
+    select 1 from public.app_pet_adoptions
+    where family_id = child_account.family_id and member_id = child_account.member_id and pet_id = p_pet_id and status = 'active'
+  ) then
+    raise exception '这只宠物已经领养';
+  end if;
+
+  adoption_cost := case when adoption_count = 0 then 0 else 500 end;
+  point_account := public.ensure_child_point_account(child_account.family_id, child_account.member_id);
+
+  if point_account.balance < adoption_cost then
+    raise exception '成长星不足，第二只宠物需要 500 成长星';
+  end if;
+
+  insert into public.app_pet_adoptions (
+    family_id, member_id, pet_id, status, adopted_at, abandoned_at, growth_value,
+    mood, hunger, happiness, cleanliness, energy, outfit_id, daily_thought, thought_date, updated_at
+  ) values (
+    child_account.family_id, child_account.member_id, p_pet_id, 'active', now(), null, 10,
+    '开心', 80, 80, 80, 80, 'classic', '今天也想和你一起完成一件小事。', current_date, now()
+  )
+  on conflict (family_id, member_id, pet_id)
+  do update set
+    status = 'active', adopted_at = now(), abandoned_at = null, growth_value = 10,
+    mood = '开心', hunger = 80, happiness = 80, cleanliness = 80, energy = 80,
+    outfit_id = 'classic', daily_thought = '今天也想和你一起完成一件小事。',
+    thought_date = current_date, updated_at = now()
+  returning * into adoption;
+
+  if adoption_cost > 0 then
+    update public.app_point_accounts
+    set balance = balance - adoption_cost, updated_at = now()
+    where family_id = child_account.family_id and member_id = child_account.member_id
+    returning * into point_account;
+
+    insert into public.app_point_transactions (
+      family_id, member_id, amount, balance_after, category, description, source_type, source_id
+    ) values (
+      child_account.family_id, child_account.member_id, -adoption_cost, point_account.balance,
+      'pet_adoption', '领养第二只电子宠物', 'pet_adoption', adoption.id::text || '-' || extract(epoch from adoption.adopted_at)::text
+    );
+  end if;
+
+  return jsonb_build_object('ok', true, 'adoptionId', adoption.id, 'cost', adoption_cost, 'balance', point_account.balance);
+end;
+$$;
+
+create or replace function public.abandon_app_pet(p_token text, p_adoption_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  child_account public.app_accounts;
+  point_account public.app_point_accounts;
+  adoption public.app_pet_adoptions;
+begin
+  select * into child_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if child_account.role <> 'child' then
+    raise exception '只有孩子账号可以操作自己的电子宠物';
+  end if;
+
+  select * into adoption
+  from public.app_pet_adoptions
+  where id = p_adoption_id
+    and family_id = child_account.family_id
+    and member_id = child_account.member_id
+    and status = 'active'
+  for update;
+
+  if adoption.id is null then
+    raise exception '电子宠物不存在或已经弃养';
+  end if;
+
+  point_account := public.ensure_child_point_account(child_account.family_id, child_account.member_id);
+  if point_account.balance < 2000 then
+    raise exception '弃养需要扣除 2000 成长星，当前余额不足';
+  end if;
+
+  update public.app_point_accounts
+  set balance = balance - 2000, updated_at = now()
+  where family_id = child_account.family_id and member_id = child_account.member_id
+  returning * into point_account;
+
+  update public.app_pet_adoptions
+  set status = 'abandoned', abandoned_at = now(), updated_at = now()
+  where id = adoption.id;
+
+  insert into public.app_point_transactions (
+    family_id, member_id, amount, balance_after, category, description, source_type, source_id
+  ) values (
+    child_account.family_id, child_account.member_id, -2000, point_account.balance,
+    'pet_abandonment', '弃养电子宠物扣除成长星', 'pet_abandonment', adoption.id::text || '-' || extract(epoch from adoption.adopted_at)::text
+  );
+
+  return jsonb_build_object('ok', true, 'balance', point_account.balance);
+end;
+$$;
+
+create or replace function public.interact_app_pet(
+  p_token text,
+  p_adoption_id uuid,
+  p_action text,
+  p_detail text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  child_account public.app_accounts;
+  adoption public.app_pet_adoptions;
+begin
+  select * into child_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if child_account.role <> 'child' then
+    raise exception '只有孩子账号可以与电子宠物互动';
+  end if;
+
+  if p_action not in ('feed', 'play', 'dress') then
+    raise exception '宠物互动类型无效';
+  end if;
+
+  select * into adoption
+  from public.app_pet_adoptions
+  where id = p_adoption_id
+    and family_id = child_account.family_id
+    and member_id = child_account.member_id
+    and status = 'active'
+  for update;
+
+  if adoption.id is null then
+    raise exception '电子宠物不存在';
+  end if;
+
+  update public.app_pet_adoptions
+  set
+    hunger = case when p_action = 'feed' then least(100, hunger + 20) else hunger end,
+    happiness = case when p_action = 'play' then least(100, happiness + 18) else happiness end,
+    energy = case when p_action = 'feed' then least(100, energy + 4) when p_action = 'play' then greatest(0, energy - 8) else energy end,
+    mood = case when p_action = 'feed' then '满足' when p_action = 'play' then '兴奋' when p_action = 'dress' then '神气' else mood end,
+    outfit_id = case when p_action = 'dress' then coalesce(nullif(trim(p_detail), ''), 'classic') else outfit_id end,
+    daily_thought = case
+      when p_action = 'feed' then '肚子饱饱的，谢谢你照顾我。'
+      when p_action = 'play' then '刚才的游戏真开心，还想再玩一次。'
+      when p_action = 'dress' then '今天的新装扮让我觉得很神气。'
+      else daily_thought
+    end,
+    thought_date = current_date,
+    updated_at = now()
+  where id = adoption.id
+  returning * into adoption;
+
+  insert into public.app_pet_interactions (adoption_id, action, detail)
+  values (adoption.id, p_action, p_detail);
+
+  return jsonb_build_object('ok', true, 'adoptionId', adoption.id);
 end;
 $$;
 
@@ -540,6 +1132,10 @@ begin
   )
   returning * into member_account;
 
+  if normalized_role = 'child' then
+    perform public.ensure_child_point_account(parent_account.family_id, member_account.member_id);
+  end if;
+
   select data into saved_data
   from public.app_family_data
   where family_id = parent_account.family_id;
@@ -677,6 +1273,15 @@ begin
     'tasks', next_tasks
   );
 
+  delete from public.app_pet_adoptions
+  where family_id = parent_account.family_id and member_id = p_member_id;
+
+  delete from public.app_point_transactions
+  where family_id = parent_account.family_id and member_id = p_member_id;
+
+  delete from public.app_point_accounts
+  where family_id = parent_account.family_id and member_id = p_member_id;
+
   delete from public.app_accounts
   where id = target_account.id;
 
@@ -695,6 +1300,8 @@ revoke all on function public.account_json(public.app_accounts) from PUBLIC;
 revoke all on function public.create_app_session(uuid) from PUBLIC, anon, authenticated;
 revoke all on function public.ensure_account_family(uuid) from PUBLIC, anon, authenticated;
 revoke all on function public.account_from_token(text) from PUBLIC, anon, authenticated;
+revoke all on function public.ensure_child_point_account(uuid, text) from PUBLIC, anon, authenticated;
+revoke all on function public.refresh_family_pet_daily(uuid) from PUBLIC, anon, authenticated;
 revoke all on function public.register_app_account(text, text, text, text) from PUBLIC;
 revoke all on function public.login_app_account(text, text) from PUBLIC;
 revoke all on function public.get_app_state(text) from PUBLIC;
@@ -703,6 +1310,17 @@ revoke all on function public.update_app_account(text, text, text, text) from PU
 revoke all on function public.create_family_member_account(text, text, text, text, text, text, text, text) from PUBLIC;
 revoke all on function public.delete_family_member_account(text, text) from PUBLIC;
 revoke all on function public.create_child_account(text, text, text, text, text, text) from PUBLIC;
+revoke all on function public.get_family_economy(text) from PUBLIC;
+revoke all on function public.award_task_points(text, text, integer, text, text) from PUBLIC;
+revoke all on function public.redeem_point_item(text, text) from PUBLIC;
+revoke all on function public.adopt_app_pet(text, text) from PUBLIC;
+revoke all on function public.abandon_app_pet(text, uuid) from PUBLIC;
+revoke all on function public.interact_app_pet(text, uuid, text, text) from PUBLIC;
+
+revoke all on table public.app_point_accounts from anon, authenticated;
+revoke all on table public.app_point_transactions from anon, authenticated;
+revoke all on table public.app_pet_adoptions from anon, authenticated;
+revoke all on table public.app_pet_interactions from anon, authenticated;
 
 grant execute on function public.register_app_account(text, text, text, text) to anon, authenticated;
 grant execute on function public.login_app_account(text, text) to anon, authenticated;
@@ -712,3 +1330,9 @@ grant execute on function public.update_app_account(text, text, text, text) to a
 grant execute on function public.create_family_member_account(text, text, text, text, text, text, text, text) to anon, authenticated;
 grant execute on function public.delete_family_member_account(text, text) to anon, authenticated;
 grant execute on function public.create_child_account(text, text, text, text, text, text) to anon, authenticated;
+grant execute on function public.get_family_economy(text) to anon, authenticated;
+grant execute on function public.award_task_points(text, text, integer, text, text) to anon, authenticated;
+grant execute on function public.redeem_point_item(text, text) to anon, authenticated;
+grant execute on function public.adopt_app_pet(text, text) to anon, authenticated;
+grant execute on function public.abandon_app_pet(text, uuid) to anon, authenticated;
+grant execute on function public.interact_app_pet(text, uuid, text, text) to anon, authenticated;
