@@ -67,8 +67,34 @@ type PointTransaction = {
 type PetInteraction = {
   id: string;
   adoptionId: string;
-  action: "feed" | "play" | "dress";
+  action: "feed" | "play" | "dress" | "pet_head" | "pet_body" | "pet_paw";
   detail?: string;
+  createdAt: string;
+};
+
+type PetMotionAction = "idle" | "greet" | "feed" | "play";
+type PetMotionCommand = { action: PetMotionAction; nonce: number };
+
+type RewardItem = {
+  id: string;
+  itemType: "physical" | "virtual";
+  name: string;
+  description: string;
+  cost: number;
+  stock?: number;
+  icon: string;
+  isActive: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type RewardRedemption = {
+  id: string;
+  memberId: string;
+  rewardItemId: string;
+  cost: number;
+  status: "pending" | "fulfilled";
   createdAt: string;
 };
 
@@ -77,6 +103,8 @@ type EconomyData = {
   transactions: PointTransaction[];
   petAdoptions: PetAdoption[];
   petInteractions: PetInteraction[];
+  rewardItems: RewardItem[];
+  redemptions: RewardRedemption[];
 };
 
 type AppAccount = {
@@ -344,6 +372,8 @@ export default function Home() {
   const [pointAccounts, setPointAccounts] = useState<PointAccount[]>([]);
   const [pointTransactions, setPointTransactions] = useState<PointTransaction[]>([]);
   const [petInteractions, setPetInteractions] = useState<PetInteraction[]>([]);
+  const [rewardItems, setRewardItems] = useState<RewardItem[]>([]);
+  const [redemptions, setRedemptions] = useState<RewardRedemption[]>([]);
   const [hasLoadedStoredData, setHasLoadedStoredData] = useState(false);
   const [account, setAccount] = useState<AppAccount | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
@@ -375,7 +405,10 @@ export default function Home() {
   const [taskFormMessage, setTaskFormMessage] = useState("");
   const [proposalFormMessage, setProposalFormMessage] = useState("");
   const [petMessage, setPetMessage] = useState("");
+  const [petMotionCommand, setPetMotionCommand] = useState<PetMotionCommand>();
   const [economyMessage, setEconomyMessage] = useState("");
+  const [editingRewardItemId, setEditingRewardItemId] = useState<string | null>(null);
+  const [rewardItemType, setRewardItemType] = useState<RewardItem["itemType"]>("physical");
 
   const currentUser =
     members.find((member) => member.id === account?.member_id) ??
@@ -468,6 +501,8 @@ export default function Home() {
     setPointTransactions(Array.isArray(data?.transactions) ? data.transactions : []);
     setPetAdoptions(Array.isArray(data?.petAdoptions) ? data.petAdoptions : []);
     setPetInteractions(Array.isArray(data?.petInteractions) ? data.petInteractions : []);
+    setRewardItems(Array.isArray(data?.rewardItems) ? data.rewardItems : []);
+    setRedemptions(Array.isArray(data?.redemptions) ? data.redemptions : []);
   }
 
   async function loadEconomy(token = sessionToken) {
@@ -488,6 +523,8 @@ export default function Home() {
     }
     setSessionToken(payload.token);
     setAccount(payload.account);
+    setActiveView("home");
+    setActivePetAdoptionId(null);
     window.localStorage.setItem(sessionStorageKey, payload.token);
     applyStoredData(payload.data);
     void loadEconomy(payload.token);
@@ -599,6 +636,8 @@ export default function Home() {
     window.localStorage.removeItem(sessionStorageKey);
     setSessionToken(null);
     setAccount(null);
+    setActiveView("home");
+    setActivePetAdoptionId(null);
     applyEconomyData(undefined);
     setAuthMessage("已退出登录。");
   }
@@ -1060,7 +1099,7 @@ export default function Home() {
   async function redeemPointItem(itemId: string) {
     if (currentUser.role !== "child" || !supabase || !sessionToken) return;
     setPetMessage("");
-    const { data, error } = await supabase.rpc("redeem_point_item", { p_token: sessionToken, p_item_id: itemId });
+    const { data, error } = await supabase.rpc("redeem_reward_item", { p_token: sessionToken, p_item_id: itemId });
     if (error) {
       setPetMessage(`兑换失败：${error.message}`);
       return;
@@ -1068,6 +1107,60 @@ export default function Home() {
     await loadEconomy();
     const result = data as { itemName?: string; cost?: number } | null;
     setPetMessage(`已兑换${result?.itemName ?? "物品"}，扣除 ${result?.cost ?? 0} 成长星。`);
+  }
+
+  async function saveRewardItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (currentUser.role !== "parent" || !supabase || !sessionToken) return;
+    const data = new FormData(event.currentTarget);
+    const name = String(data.get("rewardName") ?? "").trim();
+    const description = String(data.get("rewardDescription") ?? "").trim();
+    const cost = Number(data.get("rewardCost") ?? 0);
+    const stock = rewardItemType === "physical" ? Number(data.get("rewardStock") ?? 0) : null;
+    const icon = String(data.get("rewardIcon") ?? "🎁");
+    if (!name || !description || !Number.isFinite(cost) || cost <= 0) {
+      setEconomyMessage("请完整填写奖品名称、说明和有效价格。");
+      return;
+    }
+    if (rewardItemType === "physical" && (!Number.isFinite(stock) || Number(stock) < 0)) {
+      setEconomyMessage("实物奖品必须填写有效库存。");
+      return;
+    }
+
+    const { error } = await supabase.rpc("save_reward_item", {
+      p_token: sessionToken,
+      p_item_id: editingRewardItemId,
+      p_item_type: rewardItemType,
+      p_name: name,
+      p_description: description,
+      p_cost: cost,
+      p_stock: stock,
+      p_icon: icon
+    });
+    if (error) {
+      setEconomyMessage(`保存奖品失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    setEditingRewardItemId(null);
+    setRewardItemType("physical");
+    setEconomyMessage("奖品已保存并上架。");
+    event.currentTarget.reset();
+  }
+
+  async function toggleRewardItem(item: RewardItem) {
+    if (currentUser.role !== "parent" || !supabase || !sessionToken) return;
+    const { error } = await supabase.rpc("set_reward_item_status", {
+      p_token: sessionToken,
+      p_item_id: item.id,
+      p_is_active: !item.isActive
+    });
+    if (error) {
+      setEconomyMessage(`调整奖品状态失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    setEconomyMessage(item.isActive ? "奖品已下架。" : "奖品已重新上架。");
   }
 
   function openPet(adoptionId: string) {
@@ -1078,6 +1171,8 @@ export default function Home() {
   async function interactPet(action: PetInteraction["action"], detail?: string) {
     if (currentUser.role !== "child" || !activePetAdoptionId || !supabase || !sessionToken) return;
     setPetMessage("");
+    const motion: PetMotionAction = action === "feed" ? "feed" : action === "play" ? "play" : "greet";
+    setPetMotionCommand((current) => ({ action: motion, nonce: (current?.nonce ?? 0) + 1 }));
     const { error } = await supabase.rpc("interact_app_pet", {
       p_token: sessionToken,
       p_adoption_id: activePetAdoptionId,
@@ -1089,7 +1184,15 @@ export default function Home() {
       return;
     }
     await loadEconomy();
-    setPetMessage(action === "feed" ? "喂养完成，宠物吃得很满足。" : action === "play" ? "玩耍完成，宠物心情更好了。" : "新装扮已经保存。");
+    const messages: Record<PetInteraction["action"], string> = {
+      feed: "喂养完成，宠物吃得很满足。",
+      play: "玩耍完成，宠物心情更好了。",
+      dress: "新装扮已经保存。",
+      pet_head: "它开心地回应了你的摸头。",
+      pet_body: "它放松下来，安心地靠近你。",
+      pet_paw: "它伸出爪子，和你击了个掌。"
+    };
+    setPetMessage(messages[action]);
   }
 
   async function abandonPet() {
@@ -1128,6 +1231,7 @@ export default function Home() {
   const currentMonthCost = Math.abs(currentMonthTransactions.filter((item) => item.amount < 0).reduce((total, item) => total + item.amount, 0));
   const myPetAdoptions = petAdoptions.filter((adoption) => adoption.memberId === currentUser.id);
   const activePetAdoption = petAdoptions.find((adoption) => adoption.id === activePetAdoptionId) ?? null;
+  const editingRewardItem = rewardItems.find((item) => item.id === editingRewardItemId);
 
   if (isSessionLoading) {
     return (
@@ -1749,6 +1853,22 @@ export default function Home() {
                 <div className="section-heading"><p>家庭宠物陈列</p><strong>自动滚动展示</strong></div>
                 <HomePetShowcase adoptions={petAdoptions} memberById={memberById} onSelect={(adoption) => openPet(adoption.id)} />
               </section>
+              <section className="reward-admin-grid">
+                <form className="panel form-panel" key={editingRewardItem?.id ?? "new-reward"} onSubmit={saveRewardItem}>
+                  <h2>{editingRewardItem ? "编辑兑换奖品" : "上架兑换奖品"}</h2>
+                  <label>奖品类型<select name="rewardItemType" value={rewardItemType} onChange={(event) => setRewardItemType(event.target.value as RewardItem["itemType"])}><option value="physical">实物奖品</option><option value="virtual">虚拟奖品</option></select></label>
+                  <label>奖品名称<input name="rewardName" defaultValue={editingRewardItem?.name} placeholder="例如：周末电影券" required /></label>
+                  <label>奖品说明<textarea name="rewardDescription" defaultValue={editingRewardItem?.description} placeholder="说明兑换内容和使用方式" required /></label>
+                  <label>兑换价格<input name="rewardCost" type="number" min="1" step="1" defaultValue={editingRewardItem?.cost ?? 100} required /></label>
+                  {rewardItemType === "physical" && <label>库存数量<input name="rewardStock" type="number" min="0" step="1" defaultValue={editingRewardItem?.stock ?? 1} required /></label>}
+                  <label>封面图标<select name="rewardIcon" defaultValue={editingRewardItem?.icon ?? "🎁"}><option>🎁</option><option>🎬</option><option>🧺</option><option>📚</option><option>🧸</option><option>🎮</option><option>👕</option><option>🏠</option></select></label>
+                  <div className="form-actions"><button className="primary-button" type="submit">{editingRewardItem ? "保存奖品" : "保存并上架"}</button>{editingRewardItem && <button className="secondary-button" type="button" onClick={() => { setEditingRewardItemId(null); setRewardItemType("physical"); }}>取消编辑</button>}</div>
+                </form>
+                <section>
+                  <div className="section-heading"><p>已配置奖品</p><strong>{rewardItems.length} 个</strong></div>
+                  <div className="reward-admin-list">{rewardItems.length === 0 ? <p className="empty-state">还没有上架奖品。</p> : rewardItems.map((item) => <article key={item.id}><span>{item.icon}</span><div><h3>{item.name}</h3><small>{item.itemType === "physical" ? `实物 · 库存 ${item.stock ?? 0}` : "虚拟奖品"} · {item.cost} 成长星</small><p>{item.description}</p></div><div className="reward-admin-actions"><button className="secondary-button" type="button" onClick={() => { setEditingRewardItemId(item.id); setRewardItemType(item.itemType); }}>编辑</button><button className={item.isActive ? "danger-button" : "primary-button"} type="button" onClick={() => toggleRewardItem(item)}>{item.isActive ? "下架" : "重新上架"}</button></div></article>)}</div>
+                </section>
+              </section>
             </>
           ) : (
             <>
@@ -1778,9 +1898,9 @@ export default function Home() {
                   </article>;
                 })}</div>
                 <h3>实物兑换</h3>
-                <div className="reward-grid"><RedeemCard icon="🎬" type="实物权益" title="亲子电影夜" cost={600} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("family_movie")} /><RedeemCard icon="🧺" type="实物权益" title="周末野餐券" cost={800} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("weekend_picnic")} /></div>
+                <div className="reward-grid">{rewardItems.filter((item) => item.itemType === "physical").length === 0 ? <p className="empty-state">父母还没有上架实物奖品。</p> : rewardItems.filter((item) => item.itemType === "physical").map((item) => <RedeemCard key={item.id} icon={item.icon} type="实物奖品" title={item.name} description={item.description} cost={item.cost} stock={item.stock} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem(item.id)} />)}</div>
                 <h3>虚拟兑换</h3>
-                <div className="reward-grid"><RedeemCard icon="🪟" type="虚拟装扮" title="星光窗帘" cost={80} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("star_curtain")} /><RedeemCard icon="🎁" type="虚拟道具" title="宠物互动玩具" cost={200} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem("pet_toy")} /></div>
+                <div className="reward-grid">{rewardItems.filter((item) => item.itemType === "virtual").length === 0 ? <p className="empty-state">父母还没有上架虚拟奖品。</p> : rewardItems.filter((item) => item.itemType === "virtual").map((item) => <RedeemCard key={item.id} icon={item.icon} type="虚拟奖品" title={item.name} description={item.description} cost={item.cost} balance={currentChildPoints?.balance ?? 0} onRedeem={() => redeemPointItem(item.id)} />)}</div>
                 {petMessage && <p className="auth-message">{petMessage}</p>}
               </section>
             </>
@@ -1798,34 +1918,45 @@ export default function Home() {
             const profile = getPetDailyProfile(activePetAdoption);
             const recentInteractions = petInteractions.filter((item) => item.adoptionId === activePetAdoption.id).slice(0, 6);
             return <>
-              <section className="pet-room panel">
-                <div className="pet-room-status">
-                  <div><small>宠物伙伴</small><h2>{pet.name}</h2><p>{owner?.name ?? "孩子"} · 已领养 {profile.days} 天 · 成长值 {profile.growth}</p></div>
-                  <div className="pet-stat-chips"><span>心情 {activePetAdoption.mood}</span><span>饱食 {activePetAdoption.hunger}</span><span>快乐 {activePetAdoption.happiness}</span><span>精力 {activePetAdoption.energy}</span></div>
+              <section className={`pet-interaction-layout panel ${currentUser.role === "parent" ? "parent-view" : ""}`}>
+                {currentUser.role === "child" && <aside className="pet-control-column">
+                  <div className="section-heading"><p>陪伴互动</p><strong>自动保存</strong></div>
+                  <div className="pet-action-menu">
+                    <button type="button" onClick={() => interactPet("feed")}><span>🥣</span><strong>喂养</strong><small>增加饱食和精力</small></button>
+                    <button type="button" onClick={() => interactPet("play")}><span>🧶</span><strong>玩耍</strong><small>增加快乐，消耗精力</small></button>
+                  </div>
+                </aside>}
+                <div className="pet-room-center">
+                  <div className="pet-room-status">
+                    <div><small>宠物伙伴</small><h2>{pet.name}</h2><p>{owner?.name ?? "孩子"} · 已领养 {profile.days} 天 · 成长值 {profile.growth}</p></div>
+                    <div className="pet-stat-chips"><span>心情 {activePetAdoption.mood}</span><span>饱食 {activePetAdoption.hunger}</span><span>快乐 {activePetAdoption.happiness}</span><span>精力 {activePetAdoption.energy}</span></div>
+                  </div>
+                  <div className="pet-room-stage">
+                    <div className="pet-avatar-shell">
+                      <AnimatedPetImage petId={pet.id} command={petMotionCommand} />
+                      <PetOutfit petId={pet.id} outfitId={activePetAdoption.outfitId} />
+                      {currentUser.role === "child" && (["head", "body", "paw"] as const).map((zone) => {
+                        const hit = pet.hitZones[zone];
+                        const action = zone === "head" ? "pet_head" : zone === "body" ? "pet_body" : "pet_paw";
+                        const label = zone === "head" ? "摸摸头" : zone === "body" ? "轻抚身体" : "碰碰爪子";
+                        return <button key={zone} className={`pet-hit-zone hit-${zone}`} style={{ left: `${hit.left}%`, top: `${hit.top}%`, width: `${hit.width}%`, height: `${hit.height}%` }} type="button" aria-label={label} title={label} onClick={() => interactPet(action)} />;
+                      })}
+                    </div>
+                    <blockquote>{activePetAdoption.dailyThought}</blockquote>
+                  </div>
                 </div>
-                <div className="pet-room-stage">
-                  <div className={`pet-outfit-overlay outfit-${activePetAdoption.outfitId}`} aria-hidden="true" />
-                  <AnimatedPetImage petId={pet.id} />
-                  <blockquote>{activePetAdoption.dailyThought}</blockquote>
-                </div>
+                {currentUser.role === "child" && <aside className="pet-outfit-column">
+                  <div className="section-heading"><p>宠物装扮</p><strong>选择即保存</strong></div>
+                  <div className="outfit-picker">
+                    {[{ id: "classic", label: "经典原装" }, { id: "star_hat", label: "星星帽" }, { id: "bow", label: "梦幻蝴蝶结" }, { id: "hoodie", label: "紫色连帽衫" }].map((outfit) => <button className={activePetAdoption.outfitId === outfit.id ? "selected" : ""} type="button" key={outfit.id} onClick={() => interactPet("dress", outfit.id)}>{outfit.label}</button>)}
+                  </div>
+                  <div className="pet-danger-zone"><div><strong>弃养宠物</strong><small>将扣除 2000 成长星</small></div><button className="danger-button" type="button" onClick={abandonPet}>确认弃养</button></div>
+                </aside>}
               </section>
-
-              {currentUser.role === "child" && <section className="pet-actions-panel">
-                <div className="section-heading"><p>陪伴互动</p><strong>每次互动都会保存</strong></div>
-                <div className="pet-action-menu">
-                  <button type="button" onClick={() => interactPet("feed")}><span>🥣</span><strong>喂养</strong><small>增加饱食和精力</small></button>
-                  <button type="button" onClick={() => interactPet("play")}><span>🧶</span><strong>玩耍</strong><small>增加快乐，消耗精力</small></button>
-                </div>
-                <div className="section-heading"><p>宠物装扮</p><strong>选择后自动保存</strong></div>
-                <div className="outfit-picker">
-                  {[{ id: "classic", label: "经典原装" }, { id: "star_hat", label: "星星帽" }, { id: "bow", label: "梦幻蝴蝶结" }, { id: "hoodie", label: "紫色连帽衫" }].map((outfit) => <button className={activePetAdoption.outfitId === outfit.id ? "selected" : ""} type="button" key={outfit.id} onClick={() => interactPet("dress", outfit.id)}>{outfit.label}</button>)}
-                </div>
-                <div className="pet-danger-zone"><div><strong>弃养宠物</strong><small>弃养会扣除 2000 成长星，请谨慎操作。</small></div><button className="danger-button" type="button" onClick={abandonPet}>扣除 2000 成长星并弃养</button></div>
-              </section>}
 
               <section>
                 <div className="section-heading"><p>最近互动</p><strong>{recentInteractions.length} 条</strong></div>
-                <div className="pet-interaction-list">{recentInteractions.length === 0 ? <p className="empty-state">还没有互动记录。</p> : recentInteractions.map((item) => <span key={item.id}><strong>{item.action === "feed" ? "完成喂养" : item.action === "play" ? "一起玩耍" : "更换装扮"}</strong><small>{item.detail || "日常陪伴"} · {formatSubmittedAt(item.createdAt)}</small></span>)}</div>
+                <div className="pet-interaction-list">{recentInteractions.length === 0 ? <p className="empty-state">还没有互动记录。</p> : recentInteractions.map((item) => <span key={item.id}><strong>{{ feed: "完成喂养", play: "一起玩耍", dress: "更换装扮", pet_head: "摸摸头", pet_body: "轻抚身体", pet_paw: "碰碰爪子" }[item.action]}</strong><small>{item.detail || "日常陪伴"} · {formatSubmittedAt(item.createdAt)}</small></span>)}</div>
               </section>
               {petMessage && <p className="auth-message">{petMessage}</p>}
             </>;
@@ -2032,33 +2163,40 @@ function EyeIcon({ open }: { open: boolean }) {
   );
 }
 
-function RedeemCard({ icon, type, title, cost, balance, onRedeem }: { icon: string; type: string; title: string; cost: number; balance: number; onRedeem: () => void }) {
+function RedeemCard({ icon, type, title, description, cost, stock, balance, onRedeem }: { icon: string; type: string; title: string; description?: string; cost: number; stock?: number; balance: number; onRedeem: () => void }) {
+  const unavailable = stock !== undefined && stock <= 0;
   return (
     <article>
       <span>{icon}</span><small>{type}</small><h2>{title}</h2><strong>{cost} 成长星</strong>
-      <button className="primary-button" type="button" disabled={balance < cost} onClick={onRedeem}>{balance < cost ? "余额不足" : "立即兑换"}</button>
+      {description && <p>{description}</p>}{stock !== undefined && <small>剩余库存：{stock}</small>}
+      <button className="primary-button" type="button" disabled={balance < cost || unavailable} onClick={onRedeem}>{unavailable ? "库存不足" : balance < cost ? "余额不足" : "立即兑换"}</button>
     </article>
   );
 }
 
-function AnimatedPetImage({ petId, className = "" }: { petId: PetId; className?: string }) {
+function AnimatedPetImage({ petId, className = "", command }: { petId: PetId; className?: string; command?: PetMotionCommand }) {
   const pet = petOptions.find((item) => item.id === petId);
-  const [isActing, setIsActing] = useState(false);
+  const [motion, setMotion] = useState<PetMotionAction>("idle");
 
   useEffect(() => {
     if (!pet) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const preload = new window.Image();
-    preload.src = pet.actionImage;
+    [pet.actionImage, pet.feedImage, pet.playImage].forEach((src) => {
+      const preload = new window.Image();
+      preload.src = src;
+    });
+  }, [pet]);
+
+  useEffect(() => {
+    if (!pet || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     let resetTimer: number | undefined;
     let actionTimer: number | undefined;
     const scheduleAction = () => {
       actionTimer = window.setTimeout(() => {
-        setIsActing(true);
+        setMotion(Math.random() > 0.28 ? "greet" : "play");
         resetTimer = window.setTimeout(() => {
-          setIsActing(false);
+          setMotion("idle");
           scheduleAction();
-        }, 1200);
+        }, 1350 + Math.round(Math.random() * 500));
       }, 4500 + Math.round(Math.random() * 6500));
     };
     scheduleAction();
@@ -2068,8 +2206,30 @@ function AnimatedPetImage({ petId, className = "" }: { petId: PetId; className?:
     };
   }, [pet]);
 
+  useEffect(() => {
+    if (!command) return;
+    setMotion(command.action);
+    const timer = window.setTimeout(() => setMotion("idle"), command.action === "feed" || command.action === "play" ? 1800 : 1400);
+    return () => window.clearTimeout(timer);
+  }, [command]);
+
   if (!pet) return null;
-  return <img className={`${className}${isActing ? " is-acting" : ""}`} src={isActing ? pet.actionImage : pet.image} alt={`${pet.name}${isActing ? `正在${pet.actionLabel}` : ""}`} />;
+  const imageByMotion: Record<PetMotionAction, string> = { idle: pet.image, greet: pet.actionImage, feed: pet.feedImage, play: pet.playImage };
+  const labelByMotion: Record<PetMotionAction, string> = { idle: "", greet: pet.actionLabel, feed: "开心吃饭", play: "开心玩耍" };
+  return <img className={`${className} pet-motion-${motion}`} src={imageByMotion[motion]} alt={`${pet.name}${labelByMotion[motion] ? `正在${labelByMotion[motion]}` : ""}`} />;
+}
+
+function PetOutfit({ petId, outfitId }: { petId: PetId; outfitId: string }) {
+  if (outfitId === "classic") return null;
+  const pet = petOptions.find((item) => item.id === petId);
+  if (!pet || !(outfitId in pet.outfitAnchors)) return null;
+  const anchor = pet.outfitAnchors[outfitId as keyof typeof pet.outfitAnchors];
+  const style = { left: `${anchor.left}%`, top: `${anchor.top}%`, width: `${anchor.width}%`, transform: `translate(-50%, -50%) rotate(${anchor.rotate}deg)` };
+  return <div className={`pet-outfit fitted-${outfitId}`} style={style} aria-hidden="true">
+    {outfitId === "star_hat" && <svg viewBox="0 0 120 80"><path d="M22 61c8-33 24-49 38-49s30 16 38 49" fill="#8f65e8"/><ellipse cx="60" cy="61" rx="51" ry="12" fill="#7150c8"/><path d="m60 22 5 10 11 2-8 8 2 11-10-5-10 5 2-11-8-8 11-2z" fill="#ffd874"/></svg>}
+    {outfitId === "bow" && <svg viewBox="0 0 120 70"><path d="M55 35C37 7 8 8 13 34c4 22 30 17 42 5Z" fill="#c58af1"/><path d="M65 35C83 7 112 8 107 34c-4 22-30 17-42 5Z" fill="#a86fe2"/><circle cx="60" cy="36" r="13" fill="#f3b2d8"/><circle cx="57" cy="32" r="4" fill="#fff" opacity=".7"/></svg>}
+    {outfitId === "hoodie" && <svg viewBox="0 0 140 120"><path d="M35 25c8-12 21-19 35-19s27 7 35 19l14 72c-25 16-73 16-98 0Z" fill="#9a71e5" opacity=".94"/><path d="M45 24c10 16 40 16 50 0" fill="none" stroke="#efe5ff" strokeWidth="8" strokeLinecap="round"/><path d="M68 34v45" stroke="#f8f3ff" strokeWidth="4"/><circle cx="68" cy="83" r="8" fill="#ffd777"/></svg>}
+  </div>;
 }
 
 function HomePetShowcase({

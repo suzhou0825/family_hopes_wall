@@ -23,6 +23,9 @@ drop function if exists public.redeem_point_item(text, text);
 drop function if exists public.adopt_app_pet(text, text);
 drop function if exists public.abandon_app_pet(text, uuid);
 drop function if exists public.interact_app_pet(text, uuid, text, text);
+drop function if exists public.save_reward_item(text, uuid, text, text, text, integer, integer, text);
+drop function if exists public.set_reward_item_status(text, uuid, boolean);
+drop function if exists public.redeem_reward_item(text, uuid);
 
 drop table if exists public.app_data cascade;
 drop table if exists public.app_state cascade;
@@ -134,8 +137,37 @@ create table if not exists public.app_pet_adoptions (
 create table if not exists public.app_pet_interactions (
   id uuid primary key default extensions.gen_random_uuid(),
   adoption_id uuid not null references public.app_pet_adoptions(id) on delete cascade,
-  action text not null check (action in ('feed', 'play', 'dress')),
+  action text not null check (action in ('feed', 'play', 'dress', 'pet_head', 'pet_body', 'pet_paw')),
   detail text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.app_pet_interactions drop constraint if exists app_pet_interactions_action_check;
+alter table public.app_pet_interactions add constraint app_pet_interactions_action_check
+  check (action in ('feed', 'play', 'dress', 'pet_head', 'pet_body', 'pet_paw'));
+
+create table if not exists public.app_reward_items (
+  id uuid primary key default extensions.gen_random_uuid(),
+  family_id uuid not null references public.app_families(id) on delete cascade,
+  item_type text not null check (item_type in ('physical', 'virtual')),
+  name text not null,
+  description text not null,
+  cost integer not null check (cost > 0),
+  stock integer check (stock is null or stock >= 0),
+  icon text not null default '🎁',
+  is_active boolean not null default true,
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.app_reward_redemptions (
+  id uuid primary key default extensions.gen_random_uuid(),
+  family_id uuid not null references public.app_families(id) on delete cascade,
+  member_id text not null,
+  reward_item_id uuid not null references public.app_reward_items(id) on delete restrict,
+  cost integer not null check (cost > 0),
+  status text not null check (status in ('pending', 'fulfilled')),
   created_at timestamptz not null default now()
 );
 
@@ -147,6 +179,8 @@ alter table public.app_point_accounts enable row level security;
 alter table public.app_point_transactions enable row level security;
 alter table public.app_pet_adoptions enable row level security;
 alter table public.app_pet_interactions enable row level security;
+alter table public.app_reward_items enable row level security;
+alter table public.app_reward_redemptions enable row level security;
 
 with inserted_accounts as (
   insert into public.app_point_accounts (family_id, member_id, balance)
@@ -375,6 +409,8 @@ declare
   transaction_items jsonb;
   adoption_items jsonb;
   interaction_items jsonb;
+  reward_items jsonb;
+  redemption_items jsonb;
 begin
   select * into target_account
   from public.app_accounts
@@ -473,11 +509,42 @@ begin
     limit 100
   ) interactions;
 
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', id,
+    'itemType', item_type,
+    'name', name,
+    'description', description,
+    'cost', cost,
+    'stock', stock,
+    'icon', icon,
+    'isActive', is_active,
+    'createdBy', created_by,
+    'createdAt', created_at,
+    'updatedAt', updated_at
+  ) order by created_at desc), '[]'::jsonb) into reward_items
+  from public.app_reward_items
+  where family_id = target_account.family_id
+    and (target_account.role = 'parent' or is_active = true);
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', redemption.id,
+    'memberId', redemption.member_id,
+    'rewardItemId', redemption.reward_item_id,
+    'cost', redemption.cost,
+    'status', redemption.status,
+    'createdAt', redemption.created_at
+  ) order by redemption.created_at desc), '[]'::jsonb) into redemption_items
+  from public.app_reward_redemptions redemption
+  where redemption.family_id = target_account.family_id
+    and (target_account.role = 'parent' or redemption.member_id = target_account.member_id);
+
   return jsonb_build_object(
     'pointAccounts', account_items,
     'transactions', transaction_items,
     'petAdoptions', adoption_items,
-    'petInteractions', interaction_items
+    'petInteractions', interaction_items,
+    'rewardItems', reward_items,
+    'redemptions', redemption_items
   );
 end;
 $$;
@@ -771,7 +838,7 @@ begin
     raise exception '只有孩子账号可以与电子宠物互动';
   end if;
 
-  if p_action not in ('feed', 'play', 'dress') then
+  if p_action not in ('feed', 'play', 'dress', 'pet_head', 'pet_body', 'pet_paw') then
     raise exception '宠物互动类型无效';
   end if;
 
@@ -790,14 +857,17 @@ begin
   update public.app_pet_adoptions
   set
     hunger = case when p_action = 'feed' then least(100, hunger + 20) else hunger end,
-    happiness = case when p_action = 'play' then least(100, happiness + 18) else happiness end,
+    happiness = case when p_action = 'play' then least(100, happiness + 18) when p_action in ('pet_head', 'pet_body', 'pet_paw') then least(100, happiness + 3) else happiness end,
     energy = case when p_action = 'feed' then least(100, energy + 4) when p_action = 'play' then greatest(0, energy - 8) else energy end,
-    mood = case when p_action = 'feed' then '满足' when p_action = 'play' then '兴奋' when p_action = 'dress' then '神气' else mood end,
+    mood = case when p_action = 'feed' then '满足' when p_action = 'play' then '兴奋' when p_action = 'dress' then '神气' when p_action = 'pet_head' then '开心' when p_action = 'pet_body' then '安心' when p_action = 'pet_paw' then '兴奋' else mood end,
     outfit_id = case when p_action = 'dress' then coalesce(nullif(trim(p_detail), ''), 'classic') else outfit_id end,
     daily_thought = case
       when p_action = 'feed' then '肚子饱饱的，谢谢你照顾我。'
       when p_action = 'play' then '刚才的游戏真开心，还想再玩一次。'
       when p_action = 'dress' then '今天的新装扮让我觉得很神气。'
+      when p_action = 'pet_head' then '你摸摸我的头，我就知道你在关心我。'
+      when p_action = 'pet_body' then '安静地靠在你身边，我觉得很安心。'
+      when p_action = 'pet_paw' then '击掌成功，我们今天也要一起加油。'
       else daily_thought
     end,
     thought_date = current_date,
@@ -809,6 +879,185 @@ begin
   values (adoption.id, p_action, p_detail);
 
   return jsonb_build_object('ok', true, 'adoptionId', adoption.id);
+end;
+$$;
+
+create or replace function public.save_reward_item(
+  p_token text,
+  p_item_id uuid,
+  p_item_type text,
+  p_name text,
+  p_description text,
+  p_cost integer,
+  p_stock integer,
+  p_icon text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  parent_account public.app_accounts;
+  reward_item public.app_reward_items;
+begin
+  select * into parent_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if parent_account.role <> 'parent' then
+    raise exception '只有父母账号可以上架兑换奖品';
+  end if;
+  if p_item_type not in ('physical', 'virtual') then
+    raise exception '奖品类型无效';
+  end if;
+  if nullif(trim(p_name), '') is null or nullif(trim(p_description), '') is null then
+    raise exception '奖品名称和说明不能为空';
+  end if;
+  if p_cost is null or p_cost <= 0 then
+    raise exception '兑换价格必须大于 0';
+  end if;
+  if p_item_type = 'physical' and (p_stock is null or p_stock < 0) then
+    raise exception '实物奖品必须填写有效库存';
+  end if;
+
+  if p_item_id is null then
+    insert into public.app_reward_items (
+      family_id, item_type, name, description, cost, stock, icon, is_active, created_by
+    ) values (
+      parent_account.family_id,
+      p_item_type,
+      trim(p_name),
+      trim(p_description),
+      p_cost,
+      case when p_item_type = 'physical' then p_stock else null end,
+      coalesce(nullif(trim(p_icon), ''), '🎁'),
+      true,
+      parent_account.member_id
+    ) returning * into reward_item;
+  else
+    update public.app_reward_items
+    set
+      item_type = p_item_type,
+      name = trim(p_name),
+      description = trim(p_description),
+      cost = p_cost,
+      stock = case when p_item_type = 'physical' then p_stock else null end,
+      icon = coalesce(nullif(trim(p_icon), ''), icon),
+      updated_at = now()
+    where id = p_item_id and family_id = parent_account.family_id
+    returning * into reward_item;
+
+    if reward_item.id is null then
+      raise exception '奖品不存在';
+    end if;
+  end if;
+
+  return jsonb_build_object('ok', true, 'itemId', reward_item.id);
+end;
+$$;
+
+create or replace function public.set_reward_item_status(p_token text, p_item_id uuid, p_is_active boolean)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  parent_account public.app_accounts;
+begin
+  select * into parent_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if parent_account.role <> 'parent' then
+    raise exception '只有父母账号可以调整奖品状态';
+  end if;
+
+  update public.app_reward_items
+  set is_active = p_is_active, updated_at = now()
+  where id = p_item_id and family_id = parent_account.family_id;
+
+  if not found then
+    raise exception '奖品不存在';
+  end if;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.redeem_reward_item(p_token text, p_item_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  child_account public.app_accounts;
+  point_account public.app_point_accounts;
+  reward_item public.app_reward_items;
+  redemption public.app_reward_redemptions;
+begin
+  select * into child_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if child_account.role <> 'child' then
+    raise exception '只有孩子账号可以兑换奖品';
+  end if;
+
+  select * into reward_item
+  from public.app_reward_items
+  where id = p_item_id and family_id = child_account.family_id and is_active = true
+  for update;
+
+  if reward_item.id is null then
+    raise exception '奖品不存在或已经下架';
+  end if;
+  if reward_item.item_type = 'physical' and coalesce(reward_item.stock, 0) <= 0 then
+    raise exception '奖品库存不足';
+  end if;
+
+  point_account := public.ensure_child_point_account(child_account.family_id, child_account.member_id);
+  if point_account.balance < reward_item.cost then
+    raise exception '成长星余额不足';
+  end if;
+
+  update public.app_point_accounts
+  set balance = balance - reward_item.cost, updated_at = now()
+  where family_id = child_account.family_id and member_id = child_account.member_id
+  returning * into point_account;
+
+  if reward_item.item_type = 'physical' then
+    update public.app_reward_items
+    set stock = stock - 1, updated_at = now()
+    where id = reward_item.id;
+  end if;
+
+  insert into public.app_reward_redemptions (
+    family_id, member_id, reward_item_id, cost, status
+  ) values (
+    child_account.family_id,
+    child_account.member_id,
+    reward_item.id,
+    reward_item.cost,
+    case when reward_item.item_type = 'physical' then 'pending' else 'fulfilled' end
+  ) returning * into redemption;
+
+  insert into public.app_point_transactions (
+    family_id, member_id, amount, balance_after, category, description, source_type, source_id
+  ) values (
+    child_account.family_id,
+    child_account.member_id,
+    -reward_item.cost,
+    point_account.balance,
+    'redemption',
+    '兑换' || reward_item.name,
+    'reward_redemption',
+    redemption.id::text
+  );
+
+  return jsonb_build_object('ok', true, 'balance', point_account.balance, 'itemName', reward_item.name);
 end;
 $$;
 
@@ -1316,11 +1565,16 @@ revoke all on function public.redeem_point_item(text, text) from PUBLIC;
 revoke all on function public.adopt_app_pet(text, text) from PUBLIC;
 revoke all on function public.abandon_app_pet(text, uuid) from PUBLIC;
 revoke all on function public.interact_app_pet(text, uuid, text, text) from PUBLIC;
+revoke all on function public.save_reward_item(text, uuid, text, text, text, integer, integer, text) from PUBLIC;
+revoke all on function public.set_reward_item_status(text, uuid, boolean) from PUBLIC;
+revoke all on function public.redeem_reward_item(text, uuid) from PUBLIC;
 
 revoke all on table public.app_point_accounts from anon, authenticated;
 revoke all on table public.app_point_transactions from anon, authenticated;
 revoke all on table public.app_pet_adoptions from anon, authenticated;
 revoke all on table public.app_pet_interactions from anon, authenticated;
+revoke all on table public.app_reward_items from anon, authenticated;
+revoke all on table public.app_reward_redemptions from anon, authenticated;
 
 grant execute on function public.register_app_account(text, text, text, text) to anon, authenticated;
 grant execute on function public.login_app_account(text, text) to anon, authenticated;
@@ -1336,3 +1590,6 @@ grant execute on function public.redeem_point_item(text, text) to anon, authenti
 grant execute on function public.adopt_app_pet(text, text) to anon, authenticated;
 grant execute on function public.abandon_app_pet(text, uuid) to anon, authenticated;
 grant execute on function public.interact_app_pet(text, uuid, text, text) to anon, authenticated;
+grant execute on function public.save_reward_item(text, uuid, text, text, text, integer, integer, text) to anon, authenticated;
+grant execute on function public.set_reward_item_status(text, uuid, boolean) to anon, authenticated;
+grant execute on function public.redeem_reward_item(text, uuid) to anon, authenticated;
