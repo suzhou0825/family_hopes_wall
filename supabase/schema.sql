@@ -26,10 +26,39 @@ drop function if exists public.interact_app_pet(text, uuid, text, text);
 drop function if exists public.save_reward_item(text, uuid, text, text, text, integer, integer, text);
 drop function if exists public.set_reward_item_status(text, uuid, boolean);
 drop function if exists public.redeem_reward_item(text, uuid);
+drop function if exists public.fulfill_reward_redemption(text, uuid);
 
 drop table if exists public.app_data cascade;
 drop table if exists public.app_state cascade;
 drop table if exists public.profiles cascade;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'reward-images',
+  'reward-images',
+  true,
+  1048576,
+  array['image/png', 'image/jpeg', 'image/webp']::text[]
+)
+on conflict (id) do update set
+  public = true,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists reward_images_public_read on storage.objects;
+drop policy if exists reward_images_anon_upload on storage.objects;
+
+create policy reward_images_public_read
+on storage.objects
+for select
+to anon, authenticated
+using (bucket_id = 'reward-images');
+
+create policy reward_images_anon_upload
+on storage.objects
+for insert
+to anon, authenticated
+with check (bucket_id = 'reward-images' and (storage.foldername(name))[1] = 'rewards');
 
 create table if not exists public.app_families (
   id uuid primary key default extensions.gen_random_uuid(),
@@ -1057,7 +1086,52 @@ begin
     redemption.id::text
   );
 
-  return jsonb_build_object('ok', true, 'balance', point_account.balance, 'itemName', reward_item.name);
+  return jsonb_build_object(
+    'ok', true,
+    'balance', point_account.balance,
+    'itemName', reward_item.name,
+    'cost', reward_item.cost,
+    'status', redemption.status,
+    'redemptionId', redemption.id
+  );
+end;
+$$;
+
+create or replace function public.fulfill_reward_redemption(p_token text, p_redemption_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  parent_account public.app_accounts;
+  target_redemption public.app_reward_redemptions;
+begin
+  select * into parent_account
+  from public.app_accounts
+  where id = public.account_from_token(p_token);
+
+  if parent_account.role <> 'parent' then
+    raise exception '只有父母账号可以确认奖品发放';
+  end if;
+
+  select redemption.* into target_redemption
+  from public.app_reward_redemptions redemption
+  join public.app_reward_items item on item.id = redemption.reward_item_id
+  where redemption.id = p_redemption_id
+    and redemption.family_id = parent_account.family_id
+    and item.item_type = 'physical'
+  for update;
+
+  if target_redemption.id is null then
+    raise exception '兑换记录不存在';
+  end if;
+
+  update public.app_reward_redemptions
+  set status = 'fulfilled'
+  where id = target_redemption.id;
+
+  return jsonb_build_object('ok', true, 'redemptionId', target_redemption.id);
 end;
 $$;
 
@@ -1568,6 +1642,7 @@ revoke all on function public.interact_app_pet(text, uuid, text, text) from PUBL
 revoke all on function public.save_reward_item(text, uuid, text, text, text, integer, integer, text) from PUBLIC;
 revoke all on function public.set_reward_item_status(text, uuid, boolean) from PUBLIC;
 revoke all on function public.redeem_reward_item(text, uuid) from PUBLIC;
+revoke all on function public.fulfill_reward_redemption(text, uuid) from PUBLIC;
 
 revoke all on table public.app_point_accounts from anon, authenticated;
 revoke all on table public.app_point_transactions from anon, authenticated;
@@ -1593,3 +1668,4 @@ grant execute on function public.interact_app_pet(text, uuid, text, text) to ano
 grant execute on function public.save_reward_item(text, uuid, text, text, text, integer, integer, text) to anon, authenticated;
 grant execute on function public.set_reward_item_status(text, uuid, boolean) to anon, authenticated;
 grant execute on function public.redeem_reward_item(text, uuid) to anon, authenticated;
+grant execute on function public.fulfill_reward_redemption(text, uuid) to anon, authenticated;

@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { avatarOptions } from "../lib/avatar-config";
-import { type PetId, petOptions } from "../lib/pet-config";
+import { type PetId, type PetMotionKey, type PetOutfitId, petOptions } from "../lib/pet-config";
 
 type Role = "parent" | "child";
 type ParentTitle = "爸爸" | "妈妈";
@@ -75,6 +75,22 @@ type PetInteraction = {
 type PetMotionAction = "idle" | "greet" | "feed" | "play";
 type PetMotionCommand = { action: PetMotionAction; nonce: number };
 
+const petOutfitOptions: { id: "classic" | PetOutfitId; label: string }[] = [
+  { id: "classic", label: "经典原装" },
+  { id: "hat", label: "帽子" },
+  { id: "bow", label: "蝴蝶结" },
+  { id: "cape", label: "披风" },
+  { id: "clothes", label: "衣服" },
+  { id: "scarf", label: "围巾" }
+];
+
+function normalizePetOutfitId(outfitId?: string): "classic" | PetOutfitId {
+  if (outfitId === "star_hat") return "hat";
+  if (outfitId === "hoodie") return "clothes";
+  if (outfitId === "hat" || outfitId === "bow" || outfitId === "cape" || outfitId === "clothes" || outfitId === "scarf") return outfitId;
+  return "classic";
+}
+
 type RewardItem = {
   id: string;
   itemType: "physical" | "virtual";
@@ -121,6 +137,21 @@ type AppAccount = {
   created_at?: string;
   updated_at?: string;
 };
+
+const rewardImageBucket = "reward-images";
+const maxRewardImageSize = 1024 * 1024;
+const rewardIconPresets = [
+  { value: "preset:gift", label: "惊喜礼物", tone: "peach" },
+  { value: "preset:movie", label: "电影时光", tone: "blue" },
+  { value: "preset:outing", label: "户外活动", tone: "green" },
+  { value: "preset:book", label: "图书学习", tone: "mint" },
+  { value: "preset:toy", label: "玩具伙伴", tone: "pink" },
+  { value: "preset:game", label: "游戏娱乐", tone: "violet" },
+  { value: "preset:clothes", label: "衣物装扮", tone: "sky" },
+  { value: "preset:home", label: "家庭奖励", tone: "warm" },
+  { value: "preset:food", label: "美食甜点", tone: "coral" },
+  { value: "preset:travel", label: "旅行探索", tone: "sun" }
+] as const;
 
 type Member = {
   id: string;
@@ -1105,19 +1136,23 @@ export default function Home() {
       return;
     }
     await loadEconomy();
-    const result = data as { itemName?: string; cost?: number } | null;
-    setPetMessage(`已兑换${result?.itemName ?? "物品"}，扣除 ${result?.cost ?? 0} 成长星。`);
+    const result = data as { itemName?: string; cost?: number; status?: RewardRedemption["status"] } | null;
+    const statusText = result?.status === "pending" ? "，等待父母发放" : "，已自动发放";
+    setPetMessage(`已兑换${result?.itemName ?? "物品"}，扣除 ${result?.cost ?? 0} 成长星${statusText}。`);
   }
 
   async function saveRewardItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (currentUser.role !== "parent" || !supabase || !sessionToken) return;
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const name = String(data.get("rewardName") ?? "").trim();
     const description = String(data.get("rewardDescription") ?? "").trim();
     const cost = Number(data.get("rewardCost") ?? 0);
     const stock = rewardItemType === "physical" ? Number(data.get("rewardStock") ?? 0) : null;
-    const icon = String(data.get("rewardIcon") ?? "🎁");
+    const selectedIcon = String(data.get("rewardIcon") ?? editingRewardItem?.icon ?? rewardIconPresets[0].value);
+    const imageFile = data.get("rewardImage");
+    let icon = selectedIcon;
     if (!name || !description || !Number.isFinite(cost) || cost <= 0) {
       setEconomyMessage("请完整填写奖品名称、说明和有效价格。");
       return;
@@ -1125,6 +1160,28 @@ export default function Home() {
     if (rewardItemType === "physical" && (!Number.isFinite(stock) || Number(stock) < 0)) {
       setEconomyMessage("实物奖品必须填写有效库存。");
       return;
+    }
+    if (imageFile instanceof File && imageFile.size > 0) {
+      if (!["image/png", "image/jpeg", "image/webp"].includes(imageFile.type)) {
+        setEconomyMessage("奖品图片只支持 PNG、JPG 或 WebP。");
+        return;
+      }
+      if (imageFile.size > maxRewardImageSize) {
+        setEconomyMessage("奖品图片不能超过 1MB。");
+        return;
+      }
+      const extension = imageFile.type === "image/png" ? "png" : imageFile.type === "image/webp" ? "webp" : "jpg";
+      const storagePath = `rewards/${account?.family_id ?? "family"}/${crypto.randomUUID()}.${extension}`;
+      setEconomyMessage("正在上传奖品图片...");
+      const { error: uploadError } = await supabase.storage
+        .from(rewardImageBucket)
+        .upload(storagePath, imageFile, { cacheControl: "31536000", contentType: imageFile.type, upsert: false });
+      if (uploadError) {
+        setEconomyMessage(`上传奖品图片失败：${uploadError.message}`);
+        return;
+      }
+      const { data: publicUrlData } = supabase.storage.from(rewardImageBucket).getPublicUrl(storagePath);
+      icon = publicUrlData.publicUrl;
     }
 
     const { error } = await supabase.rpc("save_reward_item", {
@@ -1145,7 +1202,7 @@ export default function Home() {
     setEditingRewardItemId(null);
     setRewardItemType("physical");
     setEconomyMessage("奖品已保存并上架。");
-    event.currentTarget.reset();
+    form.reset();
   }
 
   async function toggleRewardItem(item: RewardItem) {
@@ -1161,6 +1218,20 @@ export default function Home() {
     }
     await loadEconomy();
     setEconomyMessage(item.isActive ? "奖品已下架。" : "奖品已重新上架。");
+  }
+
+  async function fulfillRewardRedemption(redemptionId: string) {
+    if (currentUser.role !== "parent" || !supabase || !sessionToken) return;
+    const { error } = await supabase.rpc("fulfill_reward_redemption", {
+      p_token: sessionToken,
+      p_redemption_id: redemptionId
+    });
+    if (error) {
+      setEconomyMessage(`确认发放失败：${error.message}`);
+      return;
+    }
+    await loadEconomy();
+    setEconomyMessage("兑换记录已标记为已发放。");
   }
 
   function openPet(adoptionId: string) {
@@ -1229,6 +1300,14 @@ export default function Home() {
   const currentMonthTransactions = currentPointTransactions.filter((item) => item.createdAt.slice(0, 7) === currentMonthKey);
   const currentMonthGain = currentMonthTransactions.filter((item) => item.amount > 0).reduce((total, item) => total + item.amount, 0);
   const currentMonthCost = Math.abs(currentMonthTransactions.filter((item) => item.amount < 0).reduce((total, item) => total + item.amount, 0));
+  const rewardItemById = useMemo(() => new Map(rewardItems.map((item) => [item.id, item])), [rewardItems]);
+  const childRedemptions = currentUser.role === "child" ? redemptions.filter((item) => item.memberId === currentUser.id) : [];
+  const familyPointSummaries = children.map((child) => {
+    const transactions = pointTransactions.filter((item) => item.memberId === child.id);
+    const income = transactions.filter((item) => item.amount > 0).reduce((total, item) => total + item.amount, 0);
+    const cost = Math.abs(transactions.filter((item) => item.amount < 0).reduce((total, item) => total + item.amount, 0));
+    return { child, income, cost, latest: transactions[0] };
+  });
   const myPetAdoptions = petAdoptions.filter((adoption) => adoption.memberId === currentUser.id);
   const activePetAdoption = petAdoptions.find((adoption) => adoption.id === activePetAdoptionId) ?? null;
   const editingRewardItem = rewardItems.find((item) => item.id === editingRewardItemId);
@@ -1847,11 +1926,14 @@ export default function Home() {
               </section>
               <section>
                 <div className="section-heading"><p>孩子积分排行</p><strong>真实余额</strong></div>
-                <div className="family-point-ranking">{childPointRows.map((row, index) => <article key={row.child.id}><b>{index + 1}</b><div><h2>{row.child.name}</h2><small>{petAdoptions.filter((item) => item.memberId === row.child.id).length} 只宠物</small></div><strong>{row.balance} 成长星</strong></article>)}</div>
+                <div className="family-point-ranking">{childPointRows.map((row, index) => {
+                  const summary = familyPointSummaries.find((item) => item.child.id === row.child.id);
+                  return <article key={row.child.id}><b>{index + 1}</b><div><h2>{row.child.name}</h2><small>{petAdoptions.filter((item) => item.memberId === row.child.id).length} 只宠物 · 收入 +{summary?.income ?? 0} · 消耗 -{summary?.cost ?? 0}</small>{summary?.latest && <small>最近：{summary.latest.description} {summary.latest.amount > 0 ? "+" : ""}{summary.latest.amount}</small>}</div><strong>{row.balance} 成长星</strong></article>;
+                })}</div>
               </section>
               <section>
                 <div className="section-heading"><p>家庭宠物陈列</p><strong>自动滚动展示</strong></div>
-                <HomePetShowcase adoptions={petAdoptions} memberById={memberById} onSelect={(adoption) => openPet(adoption.id)} />
+                <HomePetShowcase layout="pair" adoptions={petAdoptions} memberById={memberById} onSelect={(adoption) => openPet(adoption.id)} />
               </section>
               <section className="reward-admin-grid">
                 <form className="panel form-panel" key={editingRewardItem?.id ?? "new-reward"} onSubmit={saveRewardItem}>
@@ -1861,13 +1943,33 @@ export default function Home() {
                   <label>奖品说明<textarea name="rewardDescription" defaultValue={editingRewardItem?.description} placeholder="说明兑换内容和使用方式" required /></label>
                   <label>兑换价格<input name="rewardCost" type="number" min="1" step="1" defaultValue={editingRewardItem?.cost ?? 100} required /></label>
                   {rewardItemType === "physical" && <label>库存数量<input name="rewardStock" type="number" min="0" step="1" defaultValue={editingRewardItem?.stock ?? 1} required /></label>}
-                  <label>封面图标<select name="rewardIcon" defaultValue={editingRewardItem?.icon ?? "🎁"}><option>🎁</option><option>🎬</option><option>🧺</option><option>📚</option><option>🧸</option><option>🎮</option><option>👕</option><option>🏠</option></select></label>
+                  <fieldset className="reward-icon-picker">
+                    <legend>内置封面图标</legend>
+                    <div>
+                      {rewardIconPresets.map((preset) => (
+                        <label key={preset.value}>
+                          <input name="rewardIcon" type="radio" value={preset.value} defaultChecked={(editingRewardItem?.icon ?? rewardIconPresets[0].value) === preset.value} />
+                          <RewardCover icon={preset.value} />
+                          <span>{preset.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <label>上传自定义图片<input name="rewardImage" type="file" accept="image/png,image/jpeg,image/webp" /><small>上传后优先使用图片封面；支持 PNG、JPG、WebP，最大 1MB。</small></label>
                   <div className="form-actions"><button className="primary-button" type="submit">{editingRewardItem ? "保存奖品" : "保存并上架"}</button>{editingRewardItem && <button className="secondary-button" type="button" onClick={() => { setEditingRewardItemId(null); setRewardItemType("physical"); }}>取消编辑</button>}</div>
                 </form>
                 <section>
                   <div className="section-heading"><p>已配置奖品</p><strong>{rewardItems.length} 个</strong></div>
-                  <div className="reward-admin-list">{rewardItems.length === 0 ? <p className="empty-state">还没有上架奖品。</p> : rewardItems.map((item) => <article key={item.id}><span>{item.icon}</span><div><h3>{item.name}</h3><small>{item.itemType === "physical" ? `实物 · 库存 ${item.stock ?? 0}` : "虚拟奖品"} · {item.cost} 成长星</small><p>{item.description}</p></div><div className="reward-admin-actions"><button className="secondary-button" type="button" onClick={() => { setEditingRewardItemId(item.id); setRewardItemType(item.itemType); }}>编辑</button><button className={item.isActive ? "danger-button" : "primary-button"} type="button" onClick={() => toggleRewardItem(item)}>{item.isActive ? "下架" : "重新上架"}</button></div></article>)}</div>
+                  <div className="reward-admin-list">{rewardItems.length === 0 ? <p className="empty-state">还没有上架奖品。</p> : rewardItems.map((item) => <article key={item.id}><RewardCover icon={item.icon} /><div><h3>{item.name}</h3><small>{item.itemType === "physical" ? `实物 · 库存 ${item.stock ?? 0}` : "虚拟奖品"} · {item.cost} 成长星</small><p>{item.description}</p></div><div className="reward-admin-actions"><button className="secondary-button" type="button" onClick={() => { setEditingRewardItemId(item.id); setRewardItemType(item.itemType); }}>编辑</button><button className={item.isActive ? "danger-button" : "primary-button"} type="button" onClick={() => toggleRewardItem(item)}>{item.isActive ? "下架" : "重新上架"}</button></div></article>)}</div>
                 </section>
+              </section>
+              <section>
+                <div className="section-heading"><p>兑换履约</p><strong>{redemptions.filter((item) => item.status === "pending").length} 个待发放</strong></div>
+                <div className="redemption-list">{redemptions.length === 0 ? <p className="empty-state">还没有兑换记录。</p> : redemptions.map((redemption) => {
+                  const item = rewardItemById.get(redemption.rewardItemId);
+                  const child = memberById.get(redemption.memberId);
+                  return <article key={redemption.id}><RewardCover icon={item?.icon ?? rewardIconPresets[0].value} /><div><h3>{item?.name ?? "已删除奖品"}</h3><small>{child?.name ?? "未知成员"} · {redemption.cost} 成长星 · {formatSubmittedAt(redemption.createdAt)}</small><p>{redemption.status === "pending" ? "待父母发放" : "已发放"}</p></div>{redemption.status === "pending" && <button className="primary-button" type="button" onClick={() => fulfillRewardRedemption(redemption.id)}>确认已发放</button>}</article>;
+                })}</div>
               </section>
             </>
           ) : (
@@ -1881,8 +1983,19 @@ export default function Home() {
                 <div className="point-ledger">{currentPointTransactions.filter((item) => item.amount > 0).length === 0 ? <p className="empty-state">暂时没有积分收入。</p> : currentPointTransactions.filter((item) => item.amount > 0).map((item) => <span key={item.id}><strong>{item.description}</strong><small>{formatSubmittedAt(item.createdAt)}</small><b>+{item.amount}</b></span>)}</div>
               </section>
               <section>
+                <div className="section-heading"><p>积分消耗</p><strong>兑换与宠物</strong></div>
+                <div className="point-ledger">{currentPointTransactions.filter((item) => item.amount < 0).length === 0 ? <p className="empty-state">暂时没有积分消耗。</p> : currentPointTransactions.filter((item) => item.amount < 0).map((item) => <span key={item.id}><strong>{item.description}</strong><small>{formatSubmittedAt(item.createdAt)} · 余额 {item.balanceAfter}</small><b className="point-cost">{item.amount}</b></span>)}</div>
+              </section>
+              <section>
                 <div className="section-heading"><p>积分变化</p><strong>数据库流水</strong></div>
                 <div className="point-ledger">{currentPointTransactions.length === 0 ? <p className="empty-state">暂时没有积分流水。</p> : currentPointTransactions.map((item) => <span key={item.id}><strong>{item.description}</strong><small>{formatSubmittedAt(item.createdAt)} · 余额 {item.balanceAfter}</small><b className={item.amount < 0 ? "point-cost" : ""}>{item.amount > 0 ? "+" : ""}{item.amount}</b></span>)}</div>
+              </section>
+              <section>
+                <div className="section-heading"><p>我的兑换记录</p><strong>{childRedemptions.length} 个</strong></div>
+                <div className="redemption-list">{childRedemptions.length === 0 ? <p className="empty-state">暂时没有兑换记录。</p> : childRedemptions.map((redemption) => {
+                  const item = rewardItemById.get(redemption.rewardItemId);
+                  return <article key={redemption.id}><RewardCover icon={item?.icon ?? rewardIconPresets[0].value} /><div><h3>{item?.name ?? "已删除奖品"}</h3><small>{redemption.cost} 成长星 · {formatSubmittedAt(redemption.createdAt)}</small><p>{redemption.status === "pending" ? "等待父母发放" : "已发放"}</p></div></article>;
+                })}</div>
               </section>
               <section className="redemption-section">
                 <div className="section-heading"><p>积分兑换</p><strong>宠物 + 实物 + 虚拟物品</strong></div>
@@ -1933,8 +2046,7 @@ export default function Home() {
                   </div>
                   <div className="pet-room-stage">
                     <div className="pet-avatar-shell">
-                      <AnimatedPetImage petId={pet.id} command={petMotionCommand} />
-                      <PetOutfit petId={pet.id} outfitId={activePetAdoption.outfitId} />
+                      <AnimatedPetImage petId={pet.id} outfitId={activePetAdoption.outfitId} command={petMotionCommand} />
                       {currentUser.role === "child" && (["head", "body", "paw"] as const).map((zone) => {
                         const hit = pet.hitZones[zone];
                         const action = zone === "head" ? "pet_head" : zone === "body" ? "pet_body" : "pet_paw";
@@ -1948,7 +2060,7 @@ export default function Home() {
                 {currentUser.role === "child" && <aside className="pet-outfit-column">
                   <div className="section-heading"><p>宠物装扮</p><strong>选择即保存</strong></div>
                   <div className="outfit-picker">
-                    {[{ id: "classic", label: "经典原装" }, { id: "star_hat", label: "星星帽" }, { id: "bow", label: "梦幻蝴蝶结" }, { id: "hoodie", label: "紫色连帽衫" }].map((outfit) => <button className={activePetAdoption.outfitId === outfit.id ? "selected" : ""} type="button" key={outfit.id} onClick={() => interactPet("dress", outfit.id)}>{outfit.label}</button>)}
+                    {petOutfitOptions.map((outfit) => <button className={normalizePetOutfitId(activePetAdoption.outfitId) === outfit.id ? "selected" : ""} type="button" key={outfit.id} onClick={() => interactPet("dress", outfit.id)}>{outfit.label}</button>)}
                   </div>
                   <div className="pet-danger-zone"><div><strong>弃养宠物</strong><small>将扣除 2000 成长星</small></div><button className="danger-button" type="button" onClick={abandonPet}>确认弃养</button></div>
                 </aside>}
@@ -2163,28 +2275,54 @@ function EyeIcon({ open }: { open: boolean }) {
   );
 }
 
+function RewardCover({ icon }: { icon: string }) {
+  if (icon.startsWith("http") || icon.startsWith("/")) {
+    return <span className="reward-cover reward-cover-image"><img src={icon} alt="" /></span>;
+  }
+  const preset = rewardIconPresets.find((item) => item.value === icon);
+  if (!preset) return <span className="reward-cover reward-cover-legacy">{icon}</span>;
+  return (
+    <span className={`reward-cover reward-cover-${preset.tone}`} aria-label={preset.label}>
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        {icon === "preset:gift" && <><path d="M14 27h36v25H14z" /><path d="M11 22h42v10H11z" /><path d="M30 22v30M34 22v30" /><path d="M30 21c-10 0-12-11-5-11 5 0 7 5 7 11M34 21c10 0 12-11 5-11-5 0-7 5-7 11" /></>}
+        {icon === "preset:movie" && <><path d="M14 21h36v26H14z" /><path d="M18 17l6 10M29 17l6 10M40 17l6 10" /><path d="M26 33l12 7-12 7z" /></>}
+        {icon === "preset:outing" && <><path d="M16 42c8-15 14-23 17-23s9 8 15 23" /><path d="M12 45h40" /><path d="M23 45l8-11 5 7 4-5 7 9" /></>}
+        {icon === "preset:book" && <><path d="M16 15h17v36H16a6 6 0 0 1-6-6V21a6 6 0 0 1 6-6Z" /><path d="M33 15h15a6 6 0 0 1 6 6v24a6 6 0 0 1-6 6H33z" /><path d="M20 25h8M20 33h8M39 25h8M39 33h8" /></>}
+        {icon === "preset:toy" && <><circle cx="22" cy="26" r="8" /><circle cx="42" cy="26" r="8" /><path d="M16 36c0 9 7 16 16 16s16-7 16-16c0-8-7-13-16-13s-16 5-16 13Z" /><path d="M25 39h14M29 44h6" /></>}
+        {icon === "preset:game" && <><path d="M18 28h28a10 10 0 0 1 9 13l-1 4a6 6 0 0 1-10 2l-5-5H25l-5 5a6 6 0 0 1-10-2l-1-4a10 10 0 0 1 9-13Z" /><path d="M21 37h10M26 32v10" /><circle cx="41" cy="36" r="2" /><circle cx="48" cy="41" r="2" /></>}
+        {icon === "preset:clothes" && <><path d="M24 15l8 6 8-6 13 9-7 11-5-3v20H23V32l-5 3-7-11z" /><path d="M26 18c1 4 3 7 6 9 3-2 5-5 6-9" /></>}
+        {icon === "preset:home" && <><path d="M11 32 32 14l21 18" /><path d="M17 29v23h30V29" /><path d="M27 52V39h10v13" /><path d="M23 31h6M35 31h6" /></>}
+        {icon === "preset:food" && <><path d="M19 15v18M25 15v18M16 15v12a6 6 0 0 0 12 0V15" /><path d="M22 33v20" /><path d="M43 15c6 5 7 16 1 22v16" /><path d="M38 53h12" /></>}
+        {icon === "preset:travel" && <><path d="M20 25h24a7 7 0 0 1 7 7v15H13V32a7 7 0 0 1 7-7Z" /><path d="M25 25v-5a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v5" /><path d="M19 47v5M45 47v5M13 36h38" /></>}
+      </svg>
+    </span>
+  );
+}
+
 function RedeemCard({ icon, type, title, description, cost, stock, balance, onRedeem }: { icon: string; type: string; title: string; description?: string; cost: number; stock?: number; balance: number; onRedeem: () => void }) {
   const unavailable = stock !== undefined && stock <= 0;
   return (
     <article>
-      <span>{icon}</span><small>{type}</small><h2>{title}</h2><strong>{cost} 成长星</strong>
+      <RewardCover icon={icon} /><small>{type}</small><h2>{title}</h2><strong>{cost} 成长星</strong>
       {description && <p>{description}</p>}{stock !== undefined && <small>剩余库存：{stock}</small>}
       <button className="primary-button" type="button" disabled={balance < cost || unavailable} onClick={onRedeem}>{unavailable ? "库存不足" : balance < cost ? "余额不足" : "立即兑换"}</button>
     </article>
   );
 }
 
-function AnimatedPetImage({ petId, className = "", command }: { petId: PetId; className?: string; command?: PetMotionCommand }) {
+function AnimatedPetImage({ petId, outfitId = "classic", className = "", command }: { petId: PetId; outfitId?: string; className?: string; command?: PetMotionCommand }) {
   const pet = petOptions.find((item) => item.id === petId);
   const [motion, setMotion] = useState<PetMotionAction>("idle");
+  const normalizedOutfitId = normalizePetOutfitId(outfitId);
 
   useEffect(() => {
     if (!pet) return;
-    [pet.actionImage, pet.feedImage, pet.playImage].forEach((src) => {
+    const outfitImages = normalizedOutfitId === "classic" ? undefined : pet.outfitImages?.[normalizedOutfitId];
+    [pet.actionImage, pet.feedImage, pet.playImage, ...(outfitImages ? Object.values(outfitImages) : [])].forEach((src) => {
       const preload = new window.Image();
       preload.src = src;
     });
-  }, [pet]);
+  }, [pet, normalizedOutfitId]);
 
   useEffect(() => {
     if (!pet || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -2215,64 +2353,66 @@ function AnimatedPetImage({ petId, className = "", command }: { petId: PetId; cl
 
   if (!pet) return null;
   const imageByMotion: Record<PetMotionAction, string> = { idle: pet.image, greet: pet.actionImage, feed: pet.feedImage, play: pet.playImage };
+  const outfitImages = normalizedOutfitId === "classic" ? undefined : pet.outfitImages?.[normalizedOutfitId];
+  const outfitImageByMotion = outfitImages as Partial<Record<PetMotionKey, string>> | undefined;
+  const currentImage = outfitImageByMotion?.[motion] ?? imageByMotion[motion];
   const labelByMotion: Record<PetMotionAction, string> = { idle: "", greet: pet.actionLabel, feed: "开心吃饭", play: "开心玩耍" };
-  return <img className={`${className} pet-motion-${motion}`} src={imageByMotion[motion]} alt={`${pet.name}${labelByMotion[motion] ? `正在${labelByMotion[motion]}` : ""}`} />;
-}
-
-function PetOutfit({ petId, outfitId }: { petId: PetId; outfitId: string }) {
-  if (outfitId === "classic") return null;
-  const pet = petOptions.find((item) => item.id === petId);
-  if (!pet || !(outfitId in pet.outfitAnchors)) return null;
-  const anchor = pet.outfitAnchors[outfitId as keyof typeof pet.outfitAnchors];
-  const style = { left: `${anchor.left}%`, top: `${anchor.top}%`, width: `${anchor.width}%`, transform: `translate(-50%, -50%) rotate(${anchor.rotate}deg)` };
-  return <div className={`pet-outfit fitted-${outfitId}`} style={style} aria-hidden="true">
-    {outfitId === "star_hat" && <svg viewBox="0 0 120 80"><path d="M22 61c8-33 24-49 38-49s30 16 38 49" fill="#8f65e8"/><ellipse cx="60" cy="61" rx="51" ry="12" fill="#7150c8"/><path d="m60 22 5 10 11 2-8 8 2 11-10-5-10 5 2-11-8-8 11-2z" fill="#ffd874"/></svg>}
-    {outfitId === "bow" && <svg viewBox="0 0 120 70"><path d="M55 35C37 7 8 8 13 34c4 22 30 17 42 5Z" fill="#c58af1"/><path d="M65 35C83 7 112 8 107 34c-4 22-30 17-42 5Z" fill="#a86fe2"/><circle cx="60" cy="36" r="13" fill="#f3b2d8"/><circle cx="57" cy="32" r="4" fill="#fff" opacity=".7"/></svg>}
-    {outfitId === "hoodie" && <svg viewBox="0 0 140 120"><path d="M35 25c8-12 21-19 35-19s27 7 35 19l14 72c-25 16-73 16-98 0Z" fill="#9a71e5" opacity=".94"/><path d="M45 24c10 16 40 16 50 0" fill="none" stroke="#efe5ff" strokeWidth="8" strokeLinecap="round"/><path d="M68 34v45" stroke="#f8f3ff" strokeWidth="4"/><circle cx="68" cy="83" r="8" fill="#ffd777"/></svg>}
-  </div>;
+  return <img className={`${className} pet-motion-${motion}`} src={currentImage} alt={`${pet.name}${labelByMotion[motion] ? `正在${labelByMotion[motion]}` : ""}`} />;
 }
 
 function HomePetShowcase({
   adoptions,
   memberById,
-  onSelect
+  onSelect,
+  layout = "single"
 }: {
   adoptions: PetAdoption[];
   memberById: Map<string, Member>;
   onSelect: (adoption: PetAdoption) => void;
+  layout?: "single" | "pair";
 }) {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const showPair = layout === "pair" && adoptions.length > 1;
 
   useEffect(() => {
     setCurrentIndex(0);
-    if (adoptions.length <= 1) return;
-    const timer = window.setInterval(() => setCurrentIndex((current) => (current + 1) % adoptions.length), 7000);
+    if (adoptions.length <= 1 || (showPair && adoptions.length <= 2)) return;
+    const step = showPair ? 2 : 1;
+    const timer = window.setInterval(() => setCurrentIndex((current) => (current + step) % adoptions.length), 7000);
     return () => window.clearInterval(timer);
-  }, [adoptions.length]);
+  }, [adoptions.length, showPair]);
 
   if (adoptions.length === 0) {
     return <div className="home-pet-showcase home-pet-empty"><span>✦</span><strong>等待你的第一位宠物伙伴</strong><small>点击进入积分区，从 2 只狗狗和 2 只猫咪中领取。</small></div>;
   }
 
-  const adoption = adoptions[Math.min(currentIndex, adoptions.length - 1)];
-  const pet = petOptions.find((item) => item.id === adoption.petId);
-  if (!pet) return null;
-  const profile = getPetDailyProfile(adoption);
-  const owner = memberById.get(adoption.memberId);
+  const showcaseAdoptions = showPair
+    ? adoptions.length <= 2
+      ? adoptions
+      : [adoptions[currentIndex], adoptions[(currentIndex + 1) % adoptions.length]]
+    : [adoptions[Math.min(currentIndex, adoptions.length - 1)]];
 
   return (
-    <div className="home-pet-showcase">
-      <button className="home-pet-display" type="button" onClick={(event) => { event.stopPropagation(); onSelect(adoption); }}>
-        <div className="home-pet-figure"><span>{owner ? `${owner.name}的伙伴` : "今日陪伴"}</span><AnimatedPetImage petId={pet.id} /></div>
-        <div className="home-pet-details">
-          <small>{pet.species} · 已领养 {profile.days} 天</small>
-          <h3>{pet.name}</h3>
-          <dl><div><dt>成长值</dt><dd>{profile.growth}</dd></div><div><dt>心情</dt><dd>{profile.mood}</dd></div></dl>
-          <blockquote>{profile.thought}</blockquote>
-          <em>点击进入互动页</em>
-        </div>
-      </button>
-      {adoptions.length > 1 && <div className="pet-carousel-status">{currentIndex + 1} / {adoptions.length}</div>}
+    <div className={`home-pet-showcase home-pet-showcase-${layout} ${showcaseAdoptions.length > 1 ? "home-pet-showcase-grid" : ""}`}>
+      {showcaseAdoptions.map((adoption) => {
+        const pet = petOptions.find((item) => item.id === adoption.petId);
+        if (!pet) return null;
+        const profile = getPetDailyProfile(adoption);
+        const owner = memberById.get(adoption.memberId);
+        return (
+          <button className="home-pet-display" key={adoption.id} type="button" onClick={(event) => { event.stopPropagation(); onSelect(adoption); }}>
+            <div className="home-pet-figure"><span>{owner ? `${owner.name}的伙伴` : "今日陪伴"}</span><AnimatedPetImage petId={pet.id} outfitId={adoption.outfitId} /></div>
+            <div className="home-pet-details">
+              <small>{pet.species} · 已领养 {profile.days} 天</small>
+              <h3>{pet.name}</h3>
+              <dl><div><dt>成长值</dt><dd>{profile.growth}</dd></div><div><dt>心情</dt><dd>{profile.mood}</dd></div></dl>
+              <blockquote>{profile.thought}</blockquote>
+              <em>点击进入互动页</em>
+            </div>
+          </button>
+        );
+      })}
+      {adoptions.length > showcaseAdoptions.length && <div className="pet-carousel-status">{showPair ? "每次 2 只" : currentIndex + 1} / {adoptions.length}</div>}
     </div>
   );
 }
@@ -2284,7 +2424,7 @@ function PetStatusCard({ petId, adoption, compact = false }: { petId: PetId; ado
 
   return (
     <div className={`pet-status-card${compact ? " pet-status-compact" : ""}`}>
-      <div className="pet-image"><AnimatedPetImage petId={pet.id} /></div>
+      <div className="pet-image"><AnimatedPetImage petId={pet.id} outfitId={adoption?.outfitId} /></div>
       <div className="pet-copy">
         <small>{pet.species} · {pet.personality}</small>
         <h3>{pet.name}</h3>

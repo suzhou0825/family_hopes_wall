@@ -1,4 +1,6 @@
 export type PetId = "corgi_star" | "poodle_cloud" | "ragdoll_moon" | "orange_star";
+export type PetOutfitId = "hat" | "bow" | "cape" | "clothes" | "scarf";
+export type PetMotionKey = "idle" | "greet" | "feed" | "play";
 
 export type PetOption = {
   id: PetId;
@@ -9,7 +11,8 @@ export type PetOption = {
   actionLabel: string;
   feedImage: string;
   playImage: string;
-  outfitAnchors: Record<"star_hat" | "bow" | "hoodie", { left: number; top: number; width: number; rotate: number }>;
+  outfitImages?: Partial<Record<PetOutfitId, Record<PetMotionKey, string>>>;
+  outfitAnchors?: Record<"star_hat" | "bow" | "hoodie", { left: number; top: number; width: number; rotate: number }>;
   hitZones: Record<"head" | "body" | "paw", { left: number; top: number; width: number; height: number }>;
   personality: string;
   mood: string;
@@ -41,6 +44,13 @@ export const petOptions: PetOption[] = [
     actionLabel: "歪头看看你",
     feedImage: "/images/pets/poodle-cloud-feed.png",
     playImage: "/images/pets/poodle-cloud-play.png",
+    outfitImages: {
+      hat: { idle: "/images/pets/outfits/poodle-cloud-idle-hat-ai.png", greet: "/images/pets/outfits/poodle-cloud-greet-hat-ai.png", feed: "/images/pets/outfits/poodle-cloud-feed-hat-ai.png", play: "/images/pets/outfits/poodle-cloud-play-hat-ai.png" },
+      bow: { idle: "/images/pets/outfits/poodle-cloud-idle-bow-ai.png", greet: "/images/pets/outfits/poodle-cloud-greet-bow-ai.png", feed: "/images/pets/outfits/poodle-cloud-feed-bow-ai.png", play: "/images/pets/outfits/poodle-cloud-play-bow-ai.png" },
+      cape: { idle: "/images/pets/outfits/poodle-cloud-idle-cape-ai.png", greet: "/images/pets/outfits/poodle-cloud-greet-cape-ai.png", feed: "/images/pets/outfits/poodle-cloud-feed-cape-ai.png", play: "/images/pets/outfits/poodle-cloud-play-cape-ai.png" },
+      clothes: { idle: "/images/pets/outfits/poodle-cloud-idle-clothes-ai.png", greet: "/images/pets/outfits/poodle-cloud-greet-clothes-ai.png", feed: "/images/pets/outfits/poodle-cloud-feed-clothes-ai.png", play: "/images/pets/outfits/poodle-cloud-play-clothes-ai.png" },
+      scarf: { idle: "/images/pets/outfits/poodle-cloud-idle-scarf-ai.png", greet: "/images/pets/outfits/poodle-cloud-greet-scarf-ai.png", feed: "/images/pets/outfits/poodle-cloud-feed-scarf-ai.png", play: "/images/pets/outfits/poodle-cloud-play-scarf-ai.png" }
+    },
     outfitAnchors: { star_hat: { left: 50, top: 16, width: 23, rotate: 4 }, bow: { left: 50, top: 50, width: 21, rotate: 0 }, hoodie: { left: 50, top: 60, width: 42, rotate: 0 } },
     hitZones: { head: { left: 31, top: 20, width: 39, height: 34 }, body: { left: 37, top: 50, width: 39, height: 30 }, paw: { left: 31, top: 66, width: 42, height: 19 } },
     personality: "温柔又聪明",
@@ -56,7 +66,14 @@ export const petOptions: PetOption[] = [
     actionLabel: "眨眼打招呼",
     feedImage: "/images/pets/ragdoll-moon-feed.png",
     playImage: "/images/pets/ragdoll-moon-play.png",
-    outfitAnchors: { star_hat: { left: 50, top: 18, width: 22, rotate: -3 }, bow: { left: 50, top: 51, width: 20, rotate: 0 }, hoodie: { left: 51, top: 60, width: 41, rotate: 0 } },
+    outfitImages: {
+      hat: { idle: "/images/pets/outfits/ragdoll-moon-idle-hat-ai.png", greet: "/images/pets/outfits/ragdoll-moon-greet-hat-ai.png", feed: "/images/pets/outfits/ragdoll-moon-feed-hat-ai.png", play: "/images/pets/outfits/ragdoll-moon-play-hat-ai.png" },
+      bow: { idle: "/images/pets/outfits/ragdoll-moon-idle-bow-ai.png", greet: "/images/pets/outfits/ragdoll-moon-greet-bow-ai.png", feed: "/images/pets/outfits/ragdoll-moon-feed-bow-ai.png", play: "/images/pets/outfits/ragdoll-moon-play-bow-ai.png" },
+      cape: { idle: "/images/pets/outfits/ragdoll-moon-idle-cape-ai.png", greet: "/images/pets/outfits/ragdoll-moon-greet-cape-ai.png", feed: "/images/pets/outfits/ragdoll-moon-feed-cape-ai.png", play: "/images/pets/outfits/ragdoll-moon-play-cape-ai.png" },
+      clothes: { idle: "/images/pets/outfits/ragdoll-moon-idle-clothes-ai.png", greet: "/images/pets/outfits/ragdoll-moon-greet-clothes-ai.png", feed: "/images/pets/outfits/ragdoll-moon-feed-clothes-ai.png", play: "/images/pets/outfits/ragdoll-moon-play-clothes-ai.png" },
+      scarf: { idle: "/images/pets/outfits/ragdoll-moon-idle-scarf-ai.png", greet: "/images/pets/outfits/ragdoll-moon-greet-scarf-ai.png", feed: "/images/pets/outfits/ragdoll-moon-feed-scarf-ai.png", play: "/images/pets/outfits/ragdoll-moon-play-scarf-ai.png" }
+    },
+    outfitAnchors: { star_hat: { left: 50, top: 30, width: 18, rotate: -3 }, bow: { left: 50, top: 55, width: 15, rotate: 0 }, hoodie: { left: 50, top: 68, width: 26, rotate: 0 } },
     hitZones: { head: { left: 33, top: 24, width: 35, height: 31 }, body: { left: 38, top: 51, width: 40, height: 29 }, paw: { left: 32, top: 67, width: 39, height: 18 } },
     personality: "安静又黏人",
     mood: "满足",
@@ -71,7 +88,7 @@ export const petOptions: PetOption[] = [
     actionLabel: "伸个懒腰",
     feedImage: "/images/pets/orange-star-feed.png",
     playImage: "/images/pets/orange-star-play.png",
-    outfitAnchors: { star_hat: { left: 50, top: 16, width: 23, rotate: 3 }, bow: { left: 50, top: 52, width: 21, rotate: 0 }, hoodie: { left: 52, top: 61, width: 43, rotate: 0 } },
+    outfitAnchors: { star_hat: { left: 50, top: 29, width: 18, rotate: 3 }, bow: { left: 50, top: 56, width: 16, rotate: 0 }, hoodie: { left: 51, top: 68, width: 28, rotate: 0 } },
     hitZones: { head: { left: 34, top: 21, width: 35, height: 32 }, body: { left: 41, top: 50, width: 39, height: 30 }, paw: { left: 31, top: 68, width: 42, height: 18 } },
     personality: "活泼又好奇",
     mood: "兴奋",
